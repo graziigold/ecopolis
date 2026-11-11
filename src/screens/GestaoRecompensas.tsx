@@ -3,6 +3,7 @@ import type { Screen } from '../types';
 import { AppLayout } from '../components/Nav';
 import { CheckCircleIcon, GiftIcon, PlusIcon } from '../components/Icons';
 import { Req } from '../components/PasswordRules';
+import { squish, textError } from '../lib/validation';
 import type { Partner, Reward } from '../data/catalog';
 
 interface Props {
@@ -20,9 +21,13 @@ export default function GestaoRecompensas({ navigate, rewards, partners, onSave 
   const activePartners = partners.filter((p) => p.active);
 
   function addReward() {
-    if (!nr.name.trim() || !nr.partnerId || !(Number(nr.cost) > 0) || !(Number(nr.stock) >= 0) || nr.stock === '')
+    if (!nr.name.trim() || !nr.partnerId || nr.cost === '' || nr.stock === '')
       return setNrError('Preencha nome, parceiro, custo e estoque');
-    setDraft((d) => [...d, { id: Date.now(), name: nr.name.trim(), partnerId: Number(nr.partnerId), cat: nr.cat, cost: Number(nr.cost), stock: Number(nr.stock), active: true, icon: GiftIcon, tint: '#fdf6eb', color: '#b07d30' }]);
+    const nameErr = textError(nr.name, 'o nome da recompensa', { min: 3, max: 120 });
+    if (nameErr) return setNrError(nameErr);
+    if (!Number.isInteger(Number(nr.cost)) || Number(nr.cost) <= 0 || Number(nr.cost) > 1_000_000) return setNrError('Custo deve ser um número inteiro maior que zero');
+    if (!Number.isInteger(Number(nr.stock)) || Number(nr.stock) < 0 || Number(nr.stock) > 1_000_000) return setNrError('Estoque deve ser um número inteiro (0 ou mais)');
+    setDraft((d) => [...d, { id: Date.now(), name: squish(nr.name), partnerId: Number(nr.partnerId), cat: nr.cat, cost: Number(nr.cost), stock: Number(nr.stock), active: true, icon: GiftIcon, tint: '#fdf6eb', color: '#b07d30' }]);
     setNr({ name: '', partnerId: '', cat: 'Cupons', cost: '', stock: '' });
     setNrError('');
     setSaved(false);

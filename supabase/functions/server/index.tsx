@@ -7,6 +7,8 @@ import * as kv from "./kv_store.tsx";
 const app = new Hono();
 const P = "/make-server-fb0f2ffe";
 const BUCKET = "make-fb0f2ffe-avatars";
+const MATERIALS_BUCKET = "make-fb0f2ffe-materials"; // fotos dos materiais (catálogo público)
+const DELIVERIES_BUCKET = "make-fb0f2ffe-deliveries"; // fotos dos descartes (privado)
 
 app.use("*", logger(console.log));
 app.use(
@@ -38,6 +40,7 @@ interface Profile {
   photoPath?: string;
   location?: string; // ecolocalização do operador
   createdAt: number;
+  lastSeenAt?: number;
 }
 
 class HttpError extends Error {
@@ -49,8 +52,45 @@ const fail = (status: number, message: string): never => {
   throw new HttpError(status, message);
 };
 const newId = () => Date.now() * 100 + Math.floor(Math.random() * 100);
-const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
-const clean = (v: unknown, max = 200) => (typeof v === "string" ? v.trim().slice(0, max) : "");
+const EMAIL_RE = /^[a-z0-9._%+-]+@[a-z0-9-]+(\.[a-z0-9-]+)*\.[a-z]{2,}$/;
+const clean = (v: unknown, max = 200) => (typeof v === "string" ? v.trim().replace(/\s+/g, " ").slice(0, max) : "");
+
+// ---- validação (mesmas regras do app: src/lib/validation.ts)
+const letterCount = (v: string) => v.replace(/[^\p{L}]/gu, "").length;
+function personNameError(v: string): string | null {
+  if (!v) return "Informe o nome completo.";
+  if (v.length > 80) return "Nome muito longo.";
+  if (/\d/.test(v)) return "O nome não pode ter números.";
+  if (!/^\p{L}[\p{L}'’\- ]*$/u.test(v)) return "Use apenas letras no nome.";
+  const parts = v.split(" ").filter((p) => letterCount(p) > 0);
+  if (parts.length < 2 || letterCount(parts[0]) < 2 || !parts.slice(1).some((p) => letterCount(p) >= 2)) return "Informe nome e sobrenome.";
+  if (/(\p{L})\1{2,}/u.test(v.toLowerCase())) return "Confira o nome digitado.";
+  return null;
+}
+function textError(v: string, label: string, { min = 2, max = 120, optional = false } = {}): string | null {
+  if (!v) return optional ? null : `Informe ${label}.`;
+  if (v.length > max) return `Texto muito longo em ${label}.`;
+  if (letterCount(v) < min) return `Use palavras em ${label}, não só números ou símbolos.`;
+  if (/[<>{}]/.test(v)) return `Caracteres inválidos em ${label}.`;
+  return null;
+}
+function phoneError(raw: string, optional = true): string | null {
+  const d = raw.replace(/\D/g, "");
+  if (!d) return optional ? null : "Informe o telefone.";
+  if ((d.length !== 10 && d.length !== 11) || Number(d.slice(0, 2)) < 11 || d[2] === "0" || (d.length === 11 && d[2] !== "9") || /^(\d)\1+$/.test(d.slice(2))) return "Telefone inválido.";
+  return null;
+}
+function cnpjValid(raw: string) {
+  const d = raw.replace(/\D/g, "");
+  if (d.length !== 14 || /^(\d)\1+$/.test(d)) return false;
+  const calc = (len: number) => {
+    const w = len === 12 ? [5, 4, 3, 2, 9, 8, 7, 6, 5, 4, 3, 2] : [6, 5, 4, 3, 2, 9, 8, 7, 6, 5, 4, 3, 2];
+    const r = w.reduce((a, wi, i) => a + Number(d[i]) * wi, 0) % 11;
+    return r < 2 ? 0 : 11 - r;
+  };
+  return calc(12) === Number(d[12]) && calc(13) === Number(d[13]);
+}
+const must = (msg: string | null) => { if (msg) fail(400, msg); };
 
 const LEVELS: [number, string][] = [
   [0, "Semente Verde"],
@@ -74,6 +114,33 @@ const PASSWORD_OK = (pw: string) =>
 const SLOT_START = [8, 10, 14, 16];
 const slotStartMs = (date: string, slot: number) => new Date(`${date}T${String(SLOT_START[slot]).padStart(2, "0")}:00:00-03:00`).getTime();
 const brDate = (ms: number) => new Date(ms - 3 * 3600_000).toISOString().slice(0, 10);
+
+// Agenda: janelas de 1 hora (seg. a sex. 8h às 12h e 13h às 18h; sáb. 8h às 12h), mesmas regras do app.
+const PICKUP_CAPACITY = 3, PICKUP_NOTICE_MS = 2 * 3600_000, PICKUP_WINDOW_DAYS = 14;
+const weekdayOf = (date: string) => new Date(`${date}T12:00:00-03:00`).getUTCDay();
+const pickupHoursFor = (date: string) => (weekdayOf(date) === 6 ? [8, 9, 10, 11] : [8, 9, 10, 11, 13, 14, 15, 16, 17]);
+const hourStartMs = (date: string, h: number) => new Date(`${date}T${String(h).padStart(2, "0")}:00:00-03:00`).getTime();
+const pickupStartMs = (p: any) => (p.hour != null ? hourStartMs(p.date, p.hour) : slotStartMs(p.date, p.slot));
+const coveredHours = (p: any) => (p.hour != null ? [p.hour] : [SLOT_START[p.slot], SLOT_START[p.slot] + 1]);
+async function pickupOccupancy(exceptId?: number) {
+  const occ: Record<string, number> = {};
+  const today = brDate(Date.now());
+  for (const p of await all("pickup:")) {
+    if (p.status !== "agendada" || p.id === exceptId || p.date < today) continue;
+    for (const h of coveredHours(p)) occ[`${p.date}|${h}`] = (occ[`${p.date}|${h}`] ?? 0) + 1;
+  }
+  return occ;
+}
+async function checkPickupTime(date: string, hour: number, exceptId?: number) {
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(date) || !Number.isInteger(hour)) fail(400, "Data ou horário inválido.");
+  if (weekdayOf(date) === 0) fail(400, "Não há coleta aos domingos.");
+  if (!pickupHoursFor(date).includes(hour)) fail(400, "Horário fora do atendimento.");
+  const start = hourStartMs(date, hour);
+  if (start - Date.now() < PICKUP_NOTICE_MS) fail(400, "Escolha um horário com pelo menos 2 horas de antecedência.");
+  if (start - Date.now() > (PICKUP_WINDOW_DAYS + 1) * 86_400_000) fail(400, `Agende para os próximos ${PICKUP_WINDOW_DAYS} dias.`);
+  if (((await pickupOccupancy(exceptId))[`${date}|${hour}`] ?? 0) >= PICKUP_CAPACITY) fail(409, "Este horário acabou de lotar. Escolha outro.");
+}
+const whenText = (date: string, hour: number) => `${date.split("-").reverse().join("/")}, ${String(hour).padStart(2, "0")}h às ${String(hour + 1).padStart(2, "0")}h`;
 
 // ---------------------------------------------------------------- catálogo inicial
 const SEED = {
@@ -179,13 +246,15 @@ async function notify(userId: string, n: { kind: string; tone?: string; title: s
   await kv.set(`notif:${userId}:${id}`, { id, userId, ...n, at: Date.now(), unread: true });
 }
 
-// Garante o bucket privado das fotos de perfil (idempotente).
+// Garante os buckets de fotos (idempotente): perfis privados, materiais públicos.
 let bucketReady: Promise<void> | null = null;
 function ensureBucket() {
   bucketReady ??= (async () => {
     const { data } = await admin().storage.listBuckets();
-    if (!data?.some((b) => b.name === BUCKET)) {
-      const { error } = await admin().storage.createBucket(BUCKET, { public: false, fileSizeLimit: 2 * 1024 * 1024 });
+    const wanted: [string, boolean][] = [[BUCKET, false], [MATERIALS_BUCKET, true], [DELIVERIES_BUCKET, false]];
+    for (const [name, isPublic] of wanted) {
+      if (data?.some((b) => b.name === name)) continue;
+      const { error } = await admin().storage.createBucket(name, { public: isPublic, fileSizeLimit: 2 * 1024 * 1024 });
       if (error && !/exists/i.test(error.message)) throw error;
     }
   })().catch((e) => {
@@ -195,8 +264,35 @@ function ensureBucket() {
   return bucketReady;
 }
 
+const materialPhotoUrl = (path?: string) => (path ? admin().storage.from(MATERIALS_BUCKET).getPublicUrl(path).data.publicUrl : undefined);
+const withMaterialPhotos = (materials: any[]) => materials.map((m) => ({ ...m, photo: materialPhotoUrl(m.photoPath) }));
+
+/** Decodifica uma imagem enviada como data URL (JPEG, PNG ou WebP, até 2 MB). */
+function decodeImage(dataUrl: unknown) {
+  const m = /^data:image\/(jpeg|png|webp);base64,(.+)$/.exec(String(dataUrl ?? ""));
+  if (!m) fail(400, "Imagem inválida.");
+  const bytes = Uint8Array.from(atob(m![2]), (ch) => ch.charCodeAt(0));
+  if (bytes.length > 2 * 1024 * 1024) fail(413, "A imagem deve ter no máximo 2 MB.");
+  return { bytes, type: m![1], ext: m![1] === "jpeg" ? "jpg" : m![1] };
+}
+
 // ---------------------------------------------------------------- dados derivados
 const all = (prefix: string) => kv.getByPrefix(prefix) as Promise<any[]>;
+/** Última atividade de cada conta: acesso ao app, cadastro, entregas, coletas e resgates. */
+async function lastActivityMap(profiles: Profile[]) {
+  const [deliveries, pickups, redemptions] = await Promise.all([all("delivery:"), all("pickup:"), all("redemption:")]);
+  const last = new Map<string, number>();
+  const bump = (id: string | undefined, at: number | undefined) => {
+    if (id && at && at > (last.get(id) ?? 0)) last.set(id, at);
+  };
+  for (const p of profiles) bump(p.id, Math.max(p.lastSeenAt ?? 0, p.createdAt ?? 0));
+  for (const d of deliveries) { bump(d.citizenId, d.at); bump(d.operatorId, d.resolvedAt); }
+  for (const p of pickups) { bump(p.citizenId, p.at); bump(p.operatorId, p.resolvedAt); }
+  for (const r of redemptions) bump(r.citizenId, r.at);
+  return last;
+}
+const INACTIVE_DAYS = 90;
+
 const credited = (x: any) => (x.status === "confirmada" || x.status === "ajustada" || x.status === "realizada") && x.drachs > 0;
 
 async function rankingFor(me: Profile) {
@@ -236,6 +332,11 @@ async function managerKpis() {
     kgMonth: Math.round(done.reduce((s, x) => s + (x.realKg ?? x.kg ?? 0), 0) * 10) / 10,
     pointsMonth: done.reduce((s, x) => s + (x.drachs ?? 0), 0),
     redemptionsMonth: redemptions.filter((r) => r.at >= monthStart).length,
+    inactiveAccounts: await (async () => {
+      const last = await lastActivityMap(profiles as Profile[]);
+      const limit = Date.now() - INACTIVE_DAYS * 86400_000;
+      return (profiles as Profile[]).filter((p) => (last.get(p.id) ?? 0) < limit).length;
+    })(),
   };
 }
 
@@ -253,7 +354,7 @@ app.post(`${P}/setup`, async (c) => {
   if (profiles.some((p) => p.role === "gestor")) fail(403, "O primeiro gestor já foi configurado. Peça um convite.");
   const b = await c.req.json();
   const name = clean(b.name, 80), email = clean(b.email, 120).toLowerCase(), password = String(b.password ?? "");
-  if (name.split(/\s+/).length < 2) fail(400, "Informe nome e sobrenome.");
+  must(personNameError(name));
   if (!EMAIL_RE.test(email)) fail(400, "E-mail inválido.");
   if (!PASSWORD_OK(password)) fail(400, "A senha não atende aos requisitos.");
   const user = await createAccount(email, password, name);
@@ -267,7 +368,7 @@ app.post(`${P}/setup`, async (c) => {
 app.post(`${P}/signup`, async (c) => {
   const b = await c.req.json();
   const name = clean(b.name, 80), email = clean(b.email, 120).toLowerCase(), password = String(b.password ?? "");
-  if (name.split(/\s+/).length < 2) fail(400, "Informe nome e sobrenome.");
+  must(personNameError(name));
   if (!EMAIL_RE.test(email)) fail(400, "E-mail inválido.");
   if (!PASSWORD_OK(password)) fail(400, "A senha não atende aos requisitos.");
   const staff = await all("staff:");
@@ -296,7 +397,7 @@ app.post(`${P}/invite/accept`, async (c) => {
   const b = await c.req.json();
   const m = await findInvite(b.code);
   const name = clean(b.name, 80), password = String(b.password ?? "");
-  if (name.split(/\s+/).length < 2) fail(400, "Informe nome e sobrenome.");
+  must(personNameError(name));
   if (!PASSWORD_OK(password)) fail(400, "A senha não atende aos requisitos.");
   const user = await createAccount(m.email, password, name);
   const locations = await catalog("locations");
@@ -312,8 +413,10 @@ app.post(`${P}/invite/accept`, async (c) => {
 // ---------------------------------------------------------------- dados da sessão
 app.get(`${P}/bootstrap`, async (c) => {
   const me = await authUser(c);
+  // Registra a última atividade (no máximo uma escrita por hora).
+  if (!me.lastSeenAt || Date.now() - me.lastSeenAt > 3600_000) await kv.set(`profile:${me.id}`, { ...me, lastSeenAt: Date.now() });
   const [materials, rewards, partners, locations] = await Promise.all([catalog("materials"), catalog("rewards"), catalog("partners"), catalog("locations")]);
-  const base = { profile: await publicProfile(me), materials, rewards, partners, locations };
+  const base = { profile: await publicProfile(me), materials: withMaterialPhotos(materials), rewards, partners, locations };
 
   if (me.role === "cidadao") {
     const [deliveries, pickups, redemptions, notifications, ranking] = await Promise.all([
@@ -321,7 +424,7 @@ app.get(`${P}/bootstrap`, async (c) => {
     ]);
     return c.json({
       ...base,
-      deliveries: deliveries.filter((d) => d.citizenId === me.id),
+      deliveries: deliveries.filter((d) => d.citizenId === me.id).map(({ photoPath: _, ...d }) => d),
       pickups: pickups.filter((p) => p.citizenId === me.id),
       redemptions: redemptions.filter((r) => r.citizenId === me.id),
       notifications,
@@ -336,7 +439,7 @@ app.get(`${P}/bootstrap`, async (c) => {
       // O código da entrega fica só com o cidadão.
       deliveries: deliveries
         .filter((d) => d.status === "pendente" || (d.operatorId === me.id && (d.resolvedAt ?? 0) >= since))
-        .map(({ code, ...d }) => d),
+        .map(({ code: _c, photoPath: _p, ...d }) => d),
       pickups: pickups.filter((p) => p.status === "agendada" || ((p.status === "realizada" || p.status === "nao_realizada") && (p.resolvedAt ?? 0) >= since)),
     });
   }
@@ -349,9 +452,10 @@ app.put(`${P}/me`, async (c) => {
   const me = await authUser(c);
   const b = await c.req.json();
   const name = clean(b.name, 80);
-  if (name.split(/\s+/).length < 2) fail(400, "Informe nome e sobrenome.");
+  must(personNameError(name));
   const phone = clean(b.phone, 20);
-  if (phone && !/^\d{10,11}$/.test(phone.replace(/\D/g, ""))) fail(400, "Telefone inválido.");
+  must(phoneError(phone));
+  must(textError(clean(b.sector, 60), "o setor", { optional: true, max: 60 }));
   const next: Profile = { ...me, name, phone: phone || undefined, sector: clean(b.sector, 60) || undefined };
   await kv.set(`profile:${me.id}`, next);
   await admin().auth.admin.updateUserById(me.id, { user_metadata: { name } });
@@ -361,14 +465,10 @@ app.put(`${P}/me`, async (c) => {
 // Foto de perfil: vai para o Storage; o banco guarda só o caminho.
 app.post(`${P}/me/photo`, async (c) => {
   const me = await authUser(c);
-  const { dataUrl } = await c.req.json();
-  const m = /^data:image\/(jpeg|png|webp);base64,(.+)$/.exec(String(dataUrl ?? ""));
-  if (!m) fail(400, "Imagem inválida.");
-  const bytes = Uint8Array.from(atob(m![2]), (ch) => ch.charCodeAt(0));
-  if (bytes.length > 2 * 1024 * 1024) fail(413, "A imagem deve ter no máximo 2 MB.");
+  const img = decodeImage((await c.req.json()).dataUrl);
   await ensureBucket();
-  const path = `${me.id}/${Date.now()}.${m![1] === "jpeg" ? "jpg" : m![1]}`;
-  const { error } = await admin().storage.from(BUCKET).upload(path, bytes, { contentType: `image/${m![1]}`, upsert: false });
+  const path = `${me.id}/${Date.now()}.${img.ext}`;
+  const { error } = await admin().storage.from(BUCKET).upload(path, img.bytes, { contentType: `image/${img.type}`, upsert: false });
   if (error) fail(500, `Não foi possível salvar a foto: ${error.message}`);
   if (me.photoPath) await admin().storage.from(BUCKET).remove([me.photoPath]);
   const next = { ...me, photoPath: path };
@@ -393,28 +493,55 @@ app.post(`${P}/deliveries`, async (c) => {
   if (!mat) fail(400, "Material indisponível.");
   const kg = Number(b.kg);
   if (!(kg > 0 && kg <= 100)) fail(400, "Quantidade inválida.");
+  if (!b.photo) fail(400, "Envie uma foto do material.");
+  const img = decodeImage(b.photo);
+  await ensureBucket();
+  const photoPath = `${me.id}/${Date.now()}.${img.ext}`;
+  const up = await admin().storage.from(DELIVERIES_BUCKET).upload(photoPath, img.bytes, { contentType: `image/${img.type}`, upsert: false });
+  if (up.error) fail(500, `Não foi possível salvar a foto: ${up.error.message}`);
   const pending = new Set((await all("delivery:")).filter((d) => d.status === "pendente").map((d) => d.code));
   let code = "";
   do code = String(Math.floor(1000 + Math.random() * 9000)); while (pending.has(code));
   const id = newId();
-  const d = { id, code, citizenId: me.id, citizenName: me.name, citizenEmail: me.email, materialKey: mat.key, declaredKg: kg, status: "pendente", at: Date.now() };
+  const d = { id, code, citizenId: me.id, citizenName: me.name, citizenEmail: me.email, materialKey: mat.key, declaredKg: kg, status: "pendente", at: Date.now(), photoPath };
   await kv.set(`delivery:${id}`, d);
-  return c.json({ delivery: d });
+  const { photoPath: _pp, ...safe } = d;
+  return c.json({ delivery: safe });
 });
 
 app.post(`${P}/pickups`, async (c) => {
   const me = await requireRole(c, "cidadao");
   const b = await c.req.json();
-  const date = clean(b.date, 10), slot = Number(b.slot), type = clean(b.type, 60), address = clean(b.address, 300);
-  if (!/^\d{4}-\d{2}-\d{2}$/.test(date) || !(slot >= 0 && slot <= 3)) fail(400, "Data ou horário inválido.");
-  if (new Date(`${date}T12:00:00-03:00`).getUTCDay() === 0) fail(400, "Não há coleta aos domingos.");
-  if (date <= brDate(Date.now())) fail(400, "Escolha uma data a partir de amanhã.");
+  const date = clean(b.date, 10), hour = Number(b.hour), type = clean(b.type, 60), address = clean(b.address, 300);
   if (!type || !address) fail(400, "Informe o tipo de resíduo e o endereço.");
+  must(textError(address, "o endereço", { max: 300 }));
+  await checkPickupTime(date, hour);
   const id = newId();
-  const p = { id, citizenId: me.id, citizenName: me.name, citizenEmail: me.email, type, date, slot, address, status: "agendada", at: Date.now() };
+  const p = { id, citizenId: me.id, citizenName: me.name, citizenEmail: me.email, type, date, hour, address, status: "agendada", at: Date.now() };
   await kv.set(`pickup:${id}`, p);
-  await notify(me.id, { kind: "coleta", tone: "ok", title: "Coleta agendada", body: `${type} · ${date.split("-").reverse().join("/")}.`, goTo: "minhasColetas" });
+  await notify(me.id, { kind: "coleta", tone: "ok", title: "Coleta agendada", body: `${type} · ${whenText(date, hour)}.`, goTo: "minhasColetas" });
   return c.json({ pickup: p });
+});
+
+app.get(`${P}/pickups/availability`, async (c) => {
+  await requireRole(c, "cidadao");
+  return c.json({ occupancy: await pickupOccupancy() });
+});
+
+app.post(`${P}/pickups/:id/reschedule`, async (c) => {
+  const me = await requireRole(c, "cidadao");
+  const p = await kv.get(`pickup:${c.req.param("id")}`);
+  if (!p || p.citizenId !== me.id) fail(404, "Coleta não encontrada.");
+  if (p.status !== "agendada") fail(409, "Esta coleta não pode mais ser remarcada.");
+  if (Date.now() >= pickupStartMs(p)) fail(409, "O horário da coleta já começou.");
+  const b = await c.req.json();
+  const date = clean(b.date, 10), hour = Number(b.hour);
+  await checkPickupTime(date, hour, p.id);
+  const { slot: _legacy, ...rest } = p;
+  const next = { ...rest, date, hour, rescheduledAt: Date.now() };
+  await kv.set(`pickup:${p.id}`, next);
+  await notify(me.id, { kind: "coleta", tone: "ok", title: "Coleta remarcada", body: `${p.type} · ${whenText(date, hour)}.`, goTo: "minhasColetas" });
+  return c.json({ pickup: next });
 });
 
 app.post(`${P}/pickups/:id/cancel`, async (c) => {
@@ -422,7 +549,7 @@ app.post(`${P}/pickups/:id/cancel`, async (c) => {
   const p = await kv.get(`pickup:${c.req.param("id")}`);
   if (!p || p.citizenId !== me.id) fail(404, "Coleta não encontrada.");
   if (p.status !== "agendada") fail(409, "Esta coleta não pode mais ser cancelada.");
-  if (Date.now() >= slotStartMs(p.date, p.slot)) fail(409, "O horário da coleta já começou.");
+  if (Date.now() >= pickupStartMs(p)) fail(409, "O horário da coleta já começou.");
   const next = { ...p, status: "cancelada", resolvedAt: Date.now() };
   await kv.set(`pickup:${p.id}`, next);
   await notify(me.id, { kind: "coleta", tone: "warn", title: "Coleta cancelada", body: `${p.type} · a coleta saiu da agenda da equipe.`, goTo: "minhasColetas" });
@@ -453,6 +580,9 @@ app.post(`${P}/suggestions`, async (c) => {
   const name = clean(b.name, 100), address = clean(b.address, 300);
   const materials = Array.isArray(b.materials) ? b.materials.map((m: unknown) => clean(m, 40)).filter(Boolean).slice(0, 12) : [];
   if (!name || !address || materials.length === 0) fail(400, "Preencha nome, endereço e materiais.");
+  must(textError(name, "o nome do ponto", { min: 3, max: 100 }));
+  must(textError(address, "o endereço", { max: 300 }));
+  must(textError(clean(b.obs, 500), "as observações", { optional: true, max: 500 }));
   const id = newId();
   await kv.set(`suggestion:${id}`, { id, name, address, materials, obs: clean(b.obs, 500) || undefined, citizenId: me.id, citizenName: me.name, citizenEmail: me.email, at: Date.now(), status: "pendente" });
   return c.json({ ok: true });
@@ -473,8 +603,9 @@ app.post(`${P}/deliveries/lookup`, async (c) => {
   const code = clean((await c.req.json()).code, 4);
   const d = (await all("delivery:")).find((x) => x.code === code && x.status === "pendente");
   if (!d) fail(404, "Código não encontrado ou entrega já validada");
-  const { code: _, ...safe } = d;
-  return c.json({ delivery: safe });
+  const { code: _, photoPath, ...safe } = d;
+  const photo = photoPath ? (await admin().storage.from(DELIVERIES_BUCKET).createSignedUrl(photoPath, 3600)).data?.signedUrl : undefined;
+  return c.json({ delivery: { ...safe, photo } });
 });
 
 const TOLERANCE = 0.1;
@@ -514,7 +645,7 @@ app.post(`${P}/deliveries/:id/resolve`, async (c) => {
     );
   }
   await kv.set(`delivery:${d.id}`, next);
-  const { code: _, ...safe } = next;
+  const { code: _, photoPath: _p, ...safe } = next;
   return c.json({ delivery: safe });
 });
 
@@ -549,13 +680,40 @@ app.post(`${P}/pickups/:id/resolve`, async (c) => {
 });
 
 // ---------------------------------------------------------------- gestor
-const VALIDATE: Record<string, (items: any[]) => string | null> = {
-  materials: (items) =>
-    items.every((m) => typeof m.key === "string" && clean(m.label, 60) && Number(m.rate) > 0 && typeof m.active === "boolean") ? null : "Valores inválidos nos resíduos.",
-  rewards: (items) =>
-    items.every((r) => Number.isFinite(r.id) && clean(r.name, 120) && Number(r.cost) > 0 && Number(r.stock) >= 0 && typeof r.active === "boolean") ? null : "Valores inválidos nas recompensas.",
-  partners: (items) =>
-    items.every((p) => Number.isFinite(p.id) && clean(p.name, 120) && typeof p.active === "boolean") ? null : "Dados inválidos nos parceiros.",
+const VALIDATE: Record<string, (items: any[], current: any[]) => string | null> = {
+  materials: (items) => {
+    for (const m of items) {
+      if (typeof m.key !== "string" || !(Number(m.rate) > 0) || Number(m.rate) > 100_000 || typeof m.active !== "boolean") return "Valores inválidos nos resíduos.";
+      const e = textError(clean(m.label, 60), "o nome do resíduo", { min: 3, max: 60 });
+      if (e) return e;
+    }
+    return null;
+  },
+  rewards: (items) => {
+    for (const r of items) {
+      if (!Number.isFinite(r.id) || !Number.isInteger(Number(r.cost)) || Number(r.cost) <= 0 || !Number.isInteger(Number(r.stock)) || Number(r.stock) < 0 || typeof r.active !== "boolean") return "Valores inválidos nas recompensas.";
+      const e = textError(clean(r.name, 120), "o nome da recompensa", { min: 3, max: 120 });
+      if (e) return e;
+    }
+    return null;
+  },
+  partners: (items, current) => {
+    for (const p of items) {
+      if (!Number.isFinite(p.id) || typeof p.active !== "boolean") return "Dados inválidos nos parceiros.";
+      const before = current.find((x) => x.id === p.id);
+      // Só valida o que é novo ou foi alterado (parceiros antigos foram cadastrados sem estas regras).
+      const changed = (k: string) => !before || before[k] !== p[k];
+      const e =
+        (changed("name") && textError(clean(p.name, 120), "o nome do parceiro", { max: 120 })) ||
+        (changed("contact") && textError(clean(p.contact, 80), "o responsável", { min: 3, max: 80 })) ||
+        (changed("cnpj") && !cnpjValid(String(p.cnpj ?? "")) && "CNPJ inválido.") ||
+        (changed("phone") && phoneError(String(p.phone ?? ""), false)) ||
+        (changed("email") && !EMAIL_RE.test(String(p.email ?? "").toLowerCase()) && "E-mail inválido.") ||
+        (changed("address") && textError(clean(p.address, 200), "o endereço", { max: 200 }));
+      if (e) return e;
+    }
+    return null;
+  },
 };
 app.put(`${P}/catalog/:name`, async (c) => {
   await requireRole(c, "gestor");
@@ -563,10 +721,53 @@ app.put(`${P}/catalog/:name`, async (c) => {
   if (!(name in VALIDATE)) fail(404, "Catálogo inválido.");
   const { items } = await c.req.json();
   if (!Array.isArray(items)) fail(400, "Lista inválida.");
-  const err = VALIDATE[name](items);
+  const err = VALIDATE[name](items, await catalog(name as CatalogName));
   if (err) fail(400, err);
-  await kv.set(`catalog:${name}`, items);
-  return c.json({ items });
+  let next = items;
+  if (name === "materials") {
+    // A foto só muda pela rota própria; mantém o caminho já gravado.
+    const current = await catalog("materials");
+    next = items.map(({ photo: _p, photoPath: _pp, ...m }: any) => {
+      const photoPath = current.find((x: any) => x.key === m.key)?.photoPath;
+      return photoPath ? { ...m, photoPath } : m;
+    });
+  }
+  await kv.set(`catalog:${name}`, next);
+  return c.json({ items: name === "materials" ? withMaterialPhotos(next) : next });
+});
+
+// Foto de um material (vai para o Storage; o catálogo guarda só o caminho).
+app.post(`${P}/catalog/materials/:key/photo`, async (c) => {
+  await requireRole(c, "gestor");
+  const key = c.req.param("key");
+  const materials = await catalog("materials");
+  const mat = materials.find((m: any) => m.key === key);
+  if (!mat) fail(404, "Material não encontrado. Salve o material antes de enviar a foto.");
+  const img = decodeImage((await c.req.json()).dataUrl);
+  await ensureBucket();
+  const path = `${key.replace(/[^a-z0-9-]/gi, "")}-${Date.now()}.${img.ext}`;
+  const { error } = await admin().storage.from(MATERIALS_BUCKET).upload(path, img.bytes, { contentType: `image/${img.type}`, upsert: false });
+  if (error) fail(500, `Não foi possível salvar a foto: ${error.message}`);
+  if (mat.photoPath) await admin().storage.from(MATERIALS_BUCKET).remove([mat.photoPath]);
+  const next = materials.map((m: any) => (m.key === key ? { ...m, photoPath: path } : m));
+  await kv.set("catalog:materials", next);
+  return c.json({ materials: withMaterialPhotos(next) });
+});
+
+app.delete(`${P}/catalog/materials/:key/photo`, async (c) => {
+  await requireRole(c, "gestor");
+  const key = c.req.param("key");
+  const materials = await catalog("materials");
+  const mat = materials.find((m: any) => m.key === key);
+  if (!mat) fail(404, "Material não encontrado.");
+  if (mat.photoPath) await admin().storage.from(MATERIALS_BUCKET).remove([mat.photoPath]);
+  const next = materials.map((m: any) => {
+    if (m.key !== key) return m;
+    const { photoPath: _, ...rest } = m;
+    return rest;
+  });
+  await kv.set("catalog:materials", next);
+  return c.json({ materials: withMaterialPhotos(next) });
 });
 
 app.post(`${P}/suggestions/:id/approve`, async (c) => {
@@ -578,6 +779,8 @@ app.post(`${P}/suggestions/:id/approve`, async (c) => {
   const materials = Array.isArray(b.materials) ? b.materials.map((m: unknown) => clean(m, 40)).filter(Boolean) : [];
   const lat = Number(b.coords?.lat), lng = Number(b.coords?.lng);
   if (!address || !hours || materials.length === 0) fail(400, "Informe endereço, materiais e horário.");
+  must(textError(address, "o endereço", { max: 300 }));
+  if (!/\d/.test(hours)) must(textError(hours, "o horário", { min: 4, max: 80 }));
   if (!Number.isFinite(lat) || !Number.isFinite(lng)) fail(400, "Posição no mapa inválida.");
   const locations = await catalog("locations");
   locations.push({ id: newId(), name: s.name, address, materials, hours, open: true, lat, lng, x: 15 + Math.round(Math.random() * 70), y: 15 + Math.round(Math.random() * 65) });
@@ -593,8 +796,57 @@ app.post(`${P}/suggestions/:id/reject`, async (c) => {
   if (!s || s.status !== "pendente") fail(404, "Sugestão não encontrada ou já analisada.");
   const reason = clean((await c.req.json()).reason, 300);
   if (!reason) fail(400, "Informe o motivo.");
+  must(textError(reason, "o motivo", { min: 5, max: 300 }));
   await kv.set(`suggestion:${s.id}`, { ...s, status: "rejeitada", reason, decidedAt: Date.now() });
   await notify(s.citizenId, { kind: "sugestao", tone: "bad", title: "Sugestão não aprovada", body: `${s.name}: ${reason}.`, goTo: "ecopontos" });
+  return c.json({ ok: true });
+});
+
+// ---------------------------------------------------------------- contas (gestor)
+app.get(`${P}/accounts`, async (c) => {
+  const me = await requireRole(c, "gestor");
+  const profiles = (await all("profile:")) as Profile[];
+  const last = await lastActivityMap(profiles);
+  const accounts = profiles
+    .map((p) => ({ id: p.id, name: p.name, email: p.email, role: p.role, createdAt: p.createdAt, lastActivityAt: last.get(p.id) ?? p.createdAt, drachs: p.drachs, descartes: p.descartes, me: p.id === me.id }))
+    .sort((a, b) => a.lastActivityAt - b.lastActivityAt);
+  return c.json({ accounts, inactiveDays: INACTIVE_DAYS });
+});
+
+// Exclui uma conta: apaga o acesso e os dados pessoais e deixa o histórico anônimo.
+app.delete(`${P}/accounts/:id`, async (c) => {
+  const me = await requireRole(c, "gestor");
+  const id = c.req.param("id");
+  if (id === me.id) fail(400, "Você não pode excluir a própria conta.");
+  const target = (await kv.get(`profile:${id}`)) as Profile | null;
+  if (!target) fail(404, "Conta não encontrada.");
+  if (target!.role === "gestor") {
+    const managers = ((await all("profile:")) as Profile[]).filter((p) => p.role === "gestor");
+    if (managers.length <= 1) fail(409, "Não é possível excluir o único gestor.");
+  }
+  const { error } = await admin().auth.admin.deleteUser(id);
+  if (error && !/not.?found/i.test(error.message)) fail(500, `Não foi possível excluir o acesso: ${error.message}`);
+  if (target!.photoPath) await admin().storage.from(BUCKET).remove([target!.photoPath]);
+  const deliveryPhotos = (await all("delivery:")).filter((x) => x.citizenId === id && x.photoPath).map((x) => x.photoPath);
+  if (deliveryPhotos.length) await admin().storage.from(DELIVERIES_BUCKET).remove(deliveryPhotos);
+
+  const anon = { citizenName: "Conta excluída", citizenEmail: "" };
+  const now = Date.now();
+  const [deliveries, pickups, redemptions, suggestions, notifs, staff] = await Promise.all([
+    all("delivery:"), all("pickup:"), all("redemption:"), all("suggestion:"), all(`notif:${id}:`), all("staff:"),
+  ]);
+  const writes: [string, any][] = [];
+  for (const d of deliveries.filter((x) => x.citizenId === id))
+    writes.push([`delivery:${d.id}`, { ...d, ...anon, photoPath: undefined, ...(d.status === "pendente" && { status: "recusada", reason: "Conta excluída", resolvedAt: now, drachs: 0 }) }]);
+  for (const p of pickups.filter((x) => x.citizenId === id))
+    writes.push([`pickup:${p.id}`, { ...p, ...anon, address: "", ...(p.status === "agendada" && { status: "cancelada", resolvedAt: now }) }]);
+  for (const r of redemptions.filter((x) => x.citizenId === id)) writes.push([`redemption:${r.id}`, { ...r, citizenEmail: "" }]);
+  for (const s of suggestions.filter((x) => x.citizenId === id)) writes.push([`suggestion:${s.id}`, { ...s, ...anon }]);
+  if (writes.length) await kv.mset(writes.map((w) => w[0]), writes.map((w) => w[1]));
+  if (notifs.length) await kv.mdel(notifs.map((n) => `notif:${id}:${n.id}`));
+  const staffIds = staff.filter((s) => s.userId === id || s.email === target!.email).map((s) => `staff:${s.id}`);
+  if (staffIds.length) await kv.mdel(staffIds);
+  await kv.del(`profile:${id}`);
   return c.json({ ok: true });
 });
 

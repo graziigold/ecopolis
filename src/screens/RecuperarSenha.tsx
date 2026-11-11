@@ -7,28 +7,37 @@ import {
   LockIcon,
   EyeIcon,
   EyeOffIcon,
-  CheckCircleIcon,
 } from '../components/Icons';
 import PasswordRules, { isPasswordValid, Req } from '../components/PasswordRules';
+import { emailError } from '../lib/validation';
 
 interface RecuperarSenhaProps {
   /** true quando a pessoa voltou pelo link do e-mail */
   recovering: boolean;
   onBack: () => void;
+  /** Senha trocada: a pessoa já está conectada e segue para o app. */
   onDone: () => void;
 }
 
-type Step = 'email' | 'enviado' | 'senha' | 'sucesso';
+type Step = 'email' | 'enviado' | 'senha';
+
+// Atalho para abrir a caixa de entrada nos provedores mais comuns.
+const INBOX: [RegExp, string, string][] = [
+  [/@(gmail|googlemail)\.com$/, 'https://mail.google.com/mail/u/0/#inbox', 'Gmail'],
+  [/@(outlook|hotmail|live|msn)\.[a-z.]+$/, 'https://outlook.live.com/mail/0/inbox', 'Outlook'],
+  [/@(yahoo|ymail)\.[a-z.]+$/, 'https://mail.yahoo.com/', 'Yahoo'],
+  [/@(icloud|me|mac)\.com$/, 'https://www.icloud.com/mail', 'iCloud'],
+];
 
 export default function RecuperarSenha({ recovering, onBack, onDone }: RecuperarSenhaProps) {
   const [step, setStep] = useState<Step>(recovering ? 'senha' : 'email');
   const [email, setEmail] = useState('');
   const [resent, setResent] = useState(false);
   const [password, setPassword] = useState('');
-  const [confirm, setConfirm] = useState('');
   const [showPw, setShowPw] = useState(false);
   const [error, setError] = useState('');
   const [loading, setLoading] = useState(false);
+  const inbox = INBOX.find(([re]) => re.test(email.trim().toLowerCase()));
 
   async function sendLink() {
     const { error: err } = await supabase.auth.resetPasswordForEmail(email.trim().toLowerCase(), {
@@ -39,15 +48,14 @@ export default function RecuperarSenha({ recovering, onBack, onDone }: Recuperar
 
   async function submitEmail(e: React.FormEvent) {
     e.preventDefault();
-    if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email.trim())) {
-      setError('Informe um e-mail válido');
-      return;
-    }
+    const err0 = emailError(email);
+    if (err0) return setError(err0);
     setError('');
     setLoading(true);
     const err = await sendLink();
     setLoading(false);
     if (err) return setError(err);
+    setResent(false);
     setStep('enviado');
   }
 
@@ -61,20 +69,13 @@ export default function RecuperarSenha({ recovering, onBack, onDone }: Recuperar
 
   async function submitPassword(e: React.FormEvent) {
     e.preventDefault();
-    if (!isPasswordValid(password)) {
-      setError('A senha não atende a todos os requisitos');
-      return;
-    }
-    if (password !== confirm) {
-      setError('As senhas não conferem');
-      return;
-    }
+    if (!isPasswordValid(password)) return setError('A senha ainda não atende a todos os requisitos.');
     setError('');
     setLoading(true);
     const { error: err } = await supabase.auth.updateUser({ password });
     setLoading(false);
     if (err) return setError(authMessage(err.message));
-    setStep('sucesso');
+    onDone();
   }
 
   const inputBase =
@@ -87,7 +88,7 @@ export default function RecuperarSenha({ recovering, onBack, onDone }: Recuperar
   return (
     <div className="min-h-full flex flex-col items-center justify-center p-6 bg-[#f4f8f4]">
       <div className="w-full max-w-sm">
-        {step !== 'sucesso' && (
+        {step !== 'senha' && (
           <button
             onClick={onBack}
             className="flex items-center gap-2 text-eco-600 text-sm font-body mb-6 hover:text-eco-900 transition-colors"
@@ -104,7 +105,7 @@ export default function RecuperarSenha({ recovering, onBack, onDone }: Recuperar
               <EcoLogo width={130} />
               <h1 className="font-display font-bold text-eco-900 text-xl mt-4">Recuperar senha</h1>
               <p className="text-eco-500 text-sm font-body mt-0.5">
-                Informe seu e-mail e enviaremos um link para criar uma nova senha.
+                Digite o e-mail da sua conta. Enviaremos um link para você criar uma senha nova.
               </p>
             </div>
             <form noValidate onSubmit={submitEmail} className="space-y-4">
@@ -133,20 +134,32 @@ export default function RecuperarSenha({ recovering, onBack, onDone }: Recuperar
         {/* LINK ENVIADO */}
         {step === 'enviado' && (
           <>
-            <div className="mb-7">
+            <div className="mb-6">
               <div className="w-14 h-14 rounded-2xl bg-eco-100 flex items-center justify-center mb-5">
                 <MailIcon size={24} className="text-eco-700" />
               </div>
-              <h1 className="font-display font-bold text-eco-900 text-2xl">Verifique seu e-mail</h1>
+              <h1 className="font-display font-bold text-eco-900 text-2xl">Confira seu e-mail</h1>
               <p className="text-eco-500 text-sm font-body mt-1">
-                Se existir uma conta com <span className="font-semibold text-eco-800">{email}</span>, enviamos um link para criar uma nova senha. Abra o link neste aparelho.
+                Enviamos um link para <span className="font-semibold text-eco-800">{email.trim().toLowerCase()}</span>. Toque nele e crie a nova senha. Você entra no app logo em seguida.
               </p>
             </div>
-            <p className="text-eco-400 text-xs font-body mb-5">Não chegou? Confira a caixa de spam ou aguarde alguns minutos.</p>
+            {inbox && (
+              <a href={inbox[1]} target="_blank" rel="noreferrer" className={`${primaryBtn} mb-3`} style={primaryStyle}>
+                Abrir o {inbox[2]}
+              </a>
+            )}
+            <p className="text-eco-400 text-xs font-body mb-4">Não chegou em alguns minutos? Veja a pasta de spam.</p>
             {error && <p className="text-red-500 text-xs mb-3">{error}</p>}
-            <button type="button" onClick={resend} disabled={loading || resent} className={`${primaryBtn} !bg-none border-2 border-eco-700 text-eco-800`} style={{ background: 'transparent' }}>
-              {resent ? 'Link reenviado' : loading ? 'Enviando...' : 'Reenviar link'}
-            </button>
+            <div className="flex gap-2">
+              <button type="button" onClick={resend} disabled={loading || resent}
+                className="flex-1 h-11 rounded-xl border border-eco-200 text-eco-700 text-sm font-display font-semibold hover:bg-eco-50 disabled:opacity-60">
+                {resent ? 'Link reenviado' : loading ? 'Enviando...' : 'Reenviar'}
+              </button>
+              <button type="button" onClick={() => { setStep('email'); setError(''); }}
+                className="flex-1 h-11 rounded-xl border border-eco-200 text-eco-700 text-sm font-display font-semibold hover:bg-eco-50">
+                Corrigir e-mail
+              </button>
+            </div>
           </>
         )}
 
@@ -158,69 +171,36 @@ export default function RecuperarSenha({ recovering, onBack, onDone }: Recuperar
                 <LockIcon size={24} className="text-eco-700" />
               </div>
               <h1 className="font-display font-bold text-eco-900 text-xl">Crie uma nova senha</h1>
-              <p className="text-eco-500 text-sm font-body mt-0.5">Escolha uma senha forte para sua conta.</p>
+              <p className="text-eco-500 text-sm font-body mt-0.5">Depois de salvar, você já entra na sua conta.</p>
             </div>
             <form noValidate onSubmit={submitPassword} className="space-y-4">
               <div>
-                <label className="block text-xs font-semibold text-eco-700 mb-1.5 font-body">Nova senha<Req /></label>
+                <label htmlFor="nova-senha" className="block text-xs font-semibold text-eco-700 mb-1.5 font-body">Nova senha<Req /></label>
                 <div className="relative">
                   <LockIcon size={18} className="absolute left-3.5 top-1/2 -translate-y-1/2 text-eco-400" />
                   <input
+                    id="nova-senha"
                     type={showPw ? 'text' : 'password'}
                     value={password}
                     onChange={(e) => { setPassword(e.target.value); setError(''); }}
                     placeholder="Crie uma senha segura"
                     className={`${inputBase} pr-11`}
                     autoComplete="new-password"
+                    autoFocus
                   />
-                  <button type="button" onClick={() => setShowPw(!showPw)}
+                  <button type="button" onClick={() => setShowPw(!showPw)} aria-label={showPw ? 'Ocultar senha' : 'Mostrar senha'}
                     className="absolute right-3 top-1/2 -translate-y-1/2 text-eco-400 hover:text-eco-700 transition-colors">
                     {showPw ? <EyeOffIcon size={18} /> : <EyeIcon size={18} />}
                   </button>
                 </div>
               </div>
-              <div>
-                <label className="block text-xs font-semibold text-eco-700 mb-1.5 font-body">Confirmar senha<Req /></label>
-                <div className="relative">
-                  <LockIcon size={18} className="absolute left-3.5 top-1/2 -translate-y-1/2 text-eco-400" />
-                  <input
-                    type={showPw ? 'text' : 'password'}
-                    value={confirm}
-                    onChange={(e) => { setConfirm(e.target.value); setError(''); }}
-                    placeholder="Repita a senha"
-                    className={`${inputBase} pr-11`}
-                    autoComplete="new-password"
-                  />
-                </div>
-              </div>
-              <PasswordRules password={password} confirm={confirm} />
+              <PasswordRules password={password} />
               {error && <p className="text-red-500 text-xs">{error}</p>}
-              <button type="submit" disabled={loading} className={primaryBtn} style={primaryStyle}>
-                {loading ? 'Salvando...' : 'Redefinir senha'}
+              <button type="submit" disabled={loading || !isPasswordValid(password)} className={primaryBtn} style={primaryStyle}>
+                {loading ? 'Salvando...' : 'Salvar e entrar'}
               </button>
             </form>
           </>
-        )}
-
-        {/* SUCESSO */}
-        {step === 'sucesso' && (
-          <div className="flex flex-col items-center text-center">
-            <div className="animate-splash-in">
-              <div
-                className="w-24 h-24 rounded-full flex items-center justify-center mb-6"
-                style={{ background: 'linear-gradient(135deg, #3a9448, #1d5c2a)' }}
-              >
-                <CheckCircleIcon size={48} className="text-white" />
-              </div>
-            </div>
-            <h1 className="font-display font-bold text-eco-900 text-2xl mb-2">Senha redefinida!</h1>
-            <p className="text-eco-500 font-body text-sm max-w-xs leading-relaxed mb-8">
-              Sua senha foi atualizada com sucesso. Já pode acessar sua conta no Ecópolis.
-            </p>
-            <button onClick={onDone} className={primaryBtn} style={primaryStyle}>
-              Voltar ao login
-            </button>
-          </div>
         )}
       </div>
     </div>

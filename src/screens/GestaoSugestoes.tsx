@@ -3,6 +3,7 @@ import type { Screen } from '../types';
 import { AppLayout } from '../components/Nav';
 import { CheckCircleIcon, MapPinIcon } from '../components/Icons';
 import { Req } from '../components/PasswordRules';
+import { squish, textError } from '../lib/validation';
 import { GAMA_CENTER, LOCATION_MATERIALS, fmtWhen } from '../data/catalog';
 import { geocode, hasMapbox } from '../lib/mapbox';
 import type { LatLng } from '../lib/mapbox';
@@ -76,9 +77,12 @@ export default function GestaoSugestoes({ navigate, suggestions, locations, onAp
 
   async function approve() {
     if (!selected) return;
-    if (!address.trim()) return setError('Informe o endereço');
+    const addrErr = textError(address, 'o endereço', { max: 200 });
+    if (addrErr) return setError(addrErr);
     if (materials.length === 0) return setError('Selecione ao menos um material');
     if (!hours.trim()) return setError('Informe o horário de atendimento');
+    if (!/\d/.test(hours) && textError(hours, 'o horário', { min: 4, max: 80 })) return setError('Informe o horário de atendimento (ex.: Seg a sáb, 8h às 18h)');
+    if (hours.length > 80) return setError('Horário muito longo (máximo 80 caracteres)');
     // Sem Mapbox, posiciona perto do centro do Gama (o gestor pode ajustar depois, com o mapa ativo).
     const pos = hasMapbox ? coords : { lat: GAMA_CENTER.lat + (Math.random() - 0.5) * 0.02, lng: GAMA_CENTER.lng + (Math.random() - 0.5) * 0.02 };
     setBusy(true);
@@ -91,8 +95,9 @@ export default function GestaoSugestoes({ navigate, suggestions, locations, onAp
 
   async function reject() {
     if (!selected) return;
-    const r = reason === 'Outro' ? other.trim() : reason;
+    const r = reason === 'Outro' ? squish(other) : reason;
     if (!r) return setError('Informe o motivo da rejeição');
+    if (reason === 'Outro') { const e = textError(other, 'o motivo', { min: 5, max: 300 }); if (e) return setError(e); }
     setBusy(true);
     const ok = await onReject(selected, r);
     setBusy(false);

@@ -3,7 +3,7 @@ import type { Screen, UserData } from '../types';
 import { AppLayout, OperatorTabs } from '../components/Nav';
 import { CheckCircleIcon, ClockIcon, HomeAddressIcon, LogOutIcon } from '../components/Icons';
 import { Req } from '../components/PasswordRules';
-import { SLOTS, deliveryEcopontos, fmtDay, PICKUP_STATUS_LABEL } from '../data/catalog';
+import { comparePickups, pickupLabel, deliveryEcopontos, fmtDay, PICKUP_STATUS_LABEL } from '../data/catalog';
 import type { Material, Pickup } from '../data/catalog';
 
 interface Props {
@@ -24,7 +24,7 @@ const FAIL_REASONS = [
 
 export default function OperadorColetas({ navigate, pickups, materials, onResolve, onLogout }: Props) {
   const active = materials.filter((m) => m.active);
-  const scheduled = pickups.filter((p) => p.status === 'agendada').sort((a, b) => a.date.localeCompare(b.date) || a.slot - b.slot);
+  const scheduled = pickups.filter((p) => p.status === 'agendada').sort(comparePickups);
   const recent = pickups
     .filter((p) => p.status === 'realizada' || p.status === 'nao_realizada')
     .sort((a, b) => (b.resolvedAt ?? 0) - (a.resolvedAt ?? 0))
@@ -107,7 +107,7 @@ export default function OperadorColetas({ navigate, pickups, materials, onResolv
                       >
                         <div className="flex items-center justify-between gap-3">
                           <span className="font-body font-semibold text-eco-900 text-sm">{p.type}</span>
-                          <span className="text-xs font-body text-eco-500 flex items-center gap-1 flex-shrink-0"><ClockIcon size={12} /> {SLOTS[p.slot].label}</span>
+                          <span className="text-xs font-body text-eco-500 flex items-center gap-1 flex-shrink-0"><ClockIcon size={12} /> {pickupLabel(p)}</span>
                         </div>
                         <div className="text-xs text-eco-600 font-body flex items-start gap-1.5 mt-1.5">
                           <HomeAddressIcon size={12} className="mt-0.5 flex-shrink-0 text-eco-400" /> {p.address}
@@ -127,7 +127,7 @@ export default function OperadorColetas({ navigate, pickups, materials, onResolv
                 <div className="flex items-start justify-between gap-3 mb-4">
                   <div className="min-w-0">
                     <h2 className="font-display font-semibold text-eco-900">{current.citizenName}</h2>
-                    <p className="text-xs text-eco-500 font-body">{current.type} · {fmtDay(current.date)}, {SLOTS[current.slot].label}</p>
+                    <p className="text-xs text-eco-500 font-body">{current.type} · {fmtDay(current.date)}, {pickupLabel(current)}</p>
                   </div>
                   <button onClick={() => setCurrent(null)} className="text-sm text-eco-500 hover:text-eco-800 flex-shrink-0">Fechar</button>
                 </div>

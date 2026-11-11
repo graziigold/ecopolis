@@ -3,6 +3,7 @@ import type { Screen } from '../types';
 import { AppLayout } from '../components/Nav';
 import { CheckCircleIcon, MailIcon } from '../components/Icons';
 import { Req } from '../components/PasswordRules';
+import { emailError } from '../lib/validation';
 import type { StaffMember, StaffRole } from '../data/catalog';
 
 interface Props {
@@ -32,7 +33,8 @@ export default function GestaoEquipe({ navigate, staff, onInvite, onResend, onRe
   async function invite(e: React.FormEvent) {
     e.preventDefault();
     const v = email.trim().toLowerCase();
-    if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(v)) return setError('Informe um e-mail válido');
+    const mailErr = emailError(v);
+    if (mailErr) return setError(mailErr);
     setBusy(true);
     const r = await onInvite(v, role);
     setBusy(false);
@@ -57,7 +59,12 @@ export default function GestaoEquipe({ navigate, staff, onInvite, onResend, onRe
     <AppLayout screen="gestaoEquipe" navigate={navigate}>
       <div className="max-w-2xl mx-auto px-4 pt-6 pb-6 lg:max-w-5xl lg:px-8">
         <div className="mb-6">
-          <h1 className="font-display font-bold text-eco-900 text-2xl">Equipe</h1>
+          <div className="flex items-start justify-between gap-3">
+            <h1 className="font-display font-bold text-eco-900 text-2xl">Equipe</h1>
+            <button onClick={() => navigate('gestaoContas')} className="shrink-0 h-9 px-3.5 rounded-xl border border-eco-200 bg-white text-eco-700 text-xs font-display font-semibold hover:bg-eco-50">
+              Gerenciar contas
+            </button>
+          </div>
           <p className="text-eco-500 text-sm font-body mt-0.5">
             Acesso de gestão é só por convite. Ninguém vira gestor pelo cadastro público.
           </p>

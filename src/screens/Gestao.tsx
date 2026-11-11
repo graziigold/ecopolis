@@ -41,6 +41,18 @@ export default function Gestao({ user, navigate, materials, rewards, suggestions
           </button>
         </div>
 
+        {!!kpis?.inactiveAccounts && (
+          <button
+            onClick={() => navigate('gestaoContas')}
+            className="w-full text-left flex items-center gap-3 rounded-2xl bg-white border border-eco-100 px-4 py-3.5 mb-3 hover:border-eco-300 transition-colors"
+          >
+            <span className="w-9 h-9 rounded-xl bg-eco-50 text-eco-700 flex items-center justify-center flex-shrink-0"><UserIcon size={17} /></span>
+            <span className="flex-1 text-sm font-body text-eco-800">
+              <strong className="font-semibold">{kpis.inactiveAccounts} {kpis.inactiveAccounts === 1 ? 'conta inativa' : 'contas inativas'}</strong> há mais de 90 dias.
+            </span>
+            <ChevronRightIcon size={16} className="text-eco-400 flex-shrink-0" />
+          </button>
+        )}
         {pendingSuggestions > 0 && (
           <button
             onClick={() => navigate('gestaoSugestoes')}

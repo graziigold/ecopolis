@@ -4,6 +4,8 @@ import { AppLayout } from '../components/Nav';
 import Avatar from '../components/Avatar';
 import { ArrowLeftIcon, CameraIcon, CheckCircleIcon } from '../components/Icons';
 import { Req } from '../components/PasswordRules';
+import { toSquareJpeg } from '../lib/image';
+import { personNameError, phoneError, squish } from '../lib/validation';
 
 interface Props {
   user: UserData;
@@ -14,32 +16,9 @@ interface Props {
 
 const SECTORS = ['Setor Central', 'Setor Norte', 'Setor Sul', 'Setor Leste', 'Setor Oeste', 'Ponte Alta', 'Engenho das Lajes', 'Setor de Indústria'];
 const MAX_UPLOAD = 8 * 1024 * 1024;
-const PHOTO_SIZE = 320;
 
 const maskPhone = (v: string) =>
   v.replace(/\D/g, '').slice(0, 11).replace(/^(\d{2})(\d)/, '($1) $2').replace(/(\d{5})(\d)/, '$1-$2');
-
-/** Recorta a imagem em quadrado e reduz para PHOTO_SIZE px, gerando um JPEG leve. */
-async function toSquareJpeg(file: File): Promise<string> {
-  const url = URL.createObjectURL(file);
-  try {
-    const img = await new Promise<HTMLImageElement>((resolve, reject) => {
-      const i = new Image();
-      i.onload = () => resolve(i);
-      i.onerror = () => reject(new Error('imagem inválida'));
-      i.src = url;
-    });
-    const side = Math.min(img.naturalWidth, img.naturalHeight);
-    const canvas = document.createElement('canvas');
-    canvas.width = canvas.height = PHOTO_SIZE;
-    const ctx = canvas.getContext('2d');
-    if (!ctx) throw new Error('canvas indisponível');
-    ctx.drawImage(img, (img.naturalWidth - side) / 2, (img.naturalHeight - side) / 2, side, side, 0, 0, PHOTO_SIZE, PHOTO_SIZE);
-    return canvas.toDataURL('image/jpeg', 0.85);
-  } finally {
-    URL.revokeObjectURL(url);
-  }
-}
 
 export default function EditarPerfil({ user, navigate, onSave }: Props) {
   const [name, setName] = useState(user.name);
@@ -86,15 +65,15 @@ export default function EditarPerfil({ user, navigate, onSave }: Props) {
   async function save(e: React.FormEvent) {
     e.preventDefault();
     const er: Record<string, string> = {};
-    if (!name.trim()) er.name = 'Nome é obrigatório';
-    else if (name.trim().split(/\s+/).length < 2) er.name = 'Informe nome e sobrenome';
-    const digits = phone.replace(/\D/g, '');
-    if (digits && (digits.length < 10 || digits.length > 11)) er.phone = 'Telefone inválido';
+    const nameErr = personNameError(name);
+    if (nameErr) er.name = nameErr;
+    const phoneErr = phoneError(phone);
+    if (phoneErr) er.phone = phoneErr;
     setErrors(er);
     if (Object.keys(er).length) return;
     setSaving(true);
     const err = await onSave({
-      name: name.trim(),
+      name: squish(name),
       phone: phone || undefined,
       sector: sector || undefined,
       photo: photo === user.photo ? undefined : photo ?? null,

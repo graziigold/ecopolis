@@ -1,6 +1,7 @@
 import { useState } from 'react';
 import EcoLogo from '../components/EcoLogo';
 import { ArrowLeftIcon } from '../components/Icons';
+import { emailError, personNameError, squish } from '../lib/validation';
 import PasswordRules, { isPasswordValid, Req } from '../components/PasswordRules';
 
 interface Props {
@@ -20,12 +21,12 @@ export default function PrimeiroGestor({ onSubmit, onBack }: Props) {
 
   async function submit(e: React.FormEvent) {
     e.preventDefault();
-    if (name.trim().split(/\s+/).length < 2) return setError('Informe nome e sobrenome');
-    if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email.trim())) return setError('Informe um e-mail válido');
+    const nameErr = personNameError(name) ?? emailError(email);
+    if (nameErr) return setError(nameErr);
     if (!isPasswordValid(pw)) return setError('A senha não atende a todos os requisitos');
     if (pw !== confirm) return setError('As senhas não conferem');
     setBusy(true);
-    const err = await onSubmit(name.trim(), email.trim().toLowerCase(), pw);
+    const err = await onSubmit(squish(name), email.trim().toLowerCase(), pw);
     if (err) {
       setBusy(false);
       setError(err);

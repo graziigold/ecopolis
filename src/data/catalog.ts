@@ -26,6 +26,7 @@ export const parseDay = (iso: string) => {
   return new Date(y, m - 1, d);
 };
 export const weekday = (iso: string) => WEEKDAYS[parseDay(iso).getDay()];
+export const monthShort = (iso: string) => MONTHS[parseDay(iso).getMonth()];
 /** "Qua, 10 de setembro" */
 export const fmtDay = (iso: string) => {
   const d = parseDay(iso);
@@ -44,6 +45,7 @@ export function nextCollectionDays(n = 6, from = new Date()) {
   return out;
 }
 
+/** Faixas de 2 horas usadas nos agendamentos antigos (mantidas para exibir o histórico). */
 export const SLOTS = [
   { label: '08h às 10h', start: 8 },
   { label: '10h às 12h', start: 10 },
@@ -58,6 +60,8 @@ export interface Material {
   label: string;
   rate: number; // Ecopontos por kg
   active: boolean;
+  photo?: string; // link público da foto (Storage)
+  photoPath?: string;
   icon: typeof RecycleIcon;
   color: string;
   bg: string;
@@ -99,7 +103,7 @@ export const decorateMaterial = (m: RawMaterial): Material => ({
   ...(MATERIAL_STYLE[m.key] ?? { icon: RecycleIcon, color: '#2d7a3a', bg: '#e8f5e9' }),
 });
 export const decorateReward = (r: RawReward): Reward => ({ ...r, ...(REWARD_STYLE[r.cat] ?? REWARD_STYLE.Cupons) });
-export const stripMaterial = ({ icon: _i, color: _c, bg: _b, ...m }: Material): RawMaterial => m;
+export const stripMaterial = ({ icon: _i, color: _c, bg: _b, photo: _p, ...m }: Material): RawMaterial => m;
 export const stripReward = ({ icon: _i, tint: _t, color: _c, ...r }: Reward): RawReward => r;
 
 export type PartnerType = 'Empresa' | 'Bazar' | 'Feira' | 'ONG';
@@ -147,6 +151,7 @@ export interface Delivery {
   reason?: string;
   ecoponto?: string;
   operator?: string;
+  photo?: string; // só na busca do operador (link temporário)
 }
 
 export const deliveryEcopontos = (materials: Material[], key: string, kg: number) =>
@@ -195,7 +200,8 @@ export interface Pickup {
   citizenEmail: string;
   type: string;
   date: string; // AAAA-MM-DD
-  slot: number;
+  hour?: number; // início da janela de 1 hora (agendamentos novos)
+  slot?: number; // faixa de 2 horas (agendamentos antigos)
   address: string;
   status: PickupStatus;
   at: number;
@@ -214,11 +220,38 @@ export const PICKUP_STATUS_LABEL: Record<PickupStatus, string> = {
   cancelada: 'Cancelada',
 };
 
-export const slotStart = (p: Pick<Pickup, 'date' | 'slot'>) => {
-  const d = parseDay(p.date);
-  d.setHours(SLOTS[p.slot].start, 0, 0, 0);
+// ---------- Agenda de coletas ----------
+export const PICKUP_CAPACITY = 3; // coletas por janela de 1 hora
+export const PICKUP_NOTICE_HOURS = 2; // antecedência mínima
+export const PICKUP_WINDOW_DAYS = 14;
+const pad2 = (n: number) => String(n).padStart(2, '0');
+
+/** Janelas de 1 hora: seg. a sex. 8h às 12h e 13h às 18h; sáb. 8h às 12h. */
+export const pickupHours = (iso: string) => (parseDay(iso).getDay() === 6 ? [8, 9, 10, 11] : [8, 9, 10, 11, 13, 14, 15, 16, 17]);
+export const hourLabel = (h: number) => `${pad2(h)}h às ${pad2(h + 1)}h`;
+export const pickupStartHour = (p: Pick<Pickup, 'hour' | 'slot'>) => p.hour ?? SLOTS[p.slot ?? 0].start;
+export const pickupLabel = (p: Pick<Pickup, 'hour' | 'slot'>) => (p.hour != null ? hourLabel(p.hour) : SLOTS[p.slot ?? 0].label);
+/** Horas ocupadas por um agendamento (os antigos ocupam duas). */
+export const pickupCoveredHours = (p: Pick<Pickup, 'hour' | 'slot'>) => (p.hour != null ? [p.hour] : [SLOTS[p.slot ?? 0].start, SLOTS[p.slot ?? 0].start + 1]);
+export const hourStart = (iso: string, h: number) => {
+  const d = parseDay(iso);
+  d.setHours(h, 0, 0, 0);
   return d.getTime();
 };
+export const slotStart = (p: Pick<Pickup, 'date' | 'hour' | 'slot'>) => hourStart(p.date, pickupStartHour(p));
+export const comparePickups = (a: Pickup, b: Pickup) => a.date.localeCompare(b.date) || pickupStartHour(a) - pickupStartHour(b);
+/** Hoje (se ainda houver janela) e os próximos dias, sem domingos. */
+export function scheduleDays(now = Date.now()) {
+  const out: string[] = [];
+  const d = new Date(now);
+  d.setHours(0, 0, 0, 0);
+  for (let i = 0; i <= PICKUP_WINDOW_DAYS; i++, d.setDate(d.getDate() + 1)) {
+    if (d.getDay() === 0) continue;
+    const iso = isoDay(d);
+    if (pickupHours(iso).some((h) => hourStart(iso, h) - now >= PICKUP_NOTICE_HOURS * 3600_000)) out.push(iso);
+  }
+  return out;
+}
 /** O cidadão pode cancelar até o início da faixa de horário agendada. */
 export const canCancelPickup = (p: Pickup) => p.status === 'agendada' && Date.now() < slotStart(p);
 
@@ -265,4 +298,5 @@ export interface ManagerKpis {
   kgMonth: number;
   pointsMonth: number;
   redemptionsMonth: number;
+  inactiveAccounts: number;
 }

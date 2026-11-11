@@ -3,6 +3,7 @@ import EcoLogo from '../components/EcoLogo';
 import { ArrowLeftIcon } from '../components/Icons';
 import PasswordRules, { isPasswordValid, Req } from '../components/PasswordRules';
 import { api } from '../lib/supabase';
+import { personNameError, squish } from '../lib/validation';
 
 interface Props {
   initialCode?: string;
@@ -52,11 +53,12 @@ export default function AceitarConvite({ initialCode = '', onAccept, onBack }: P
 
   async function finish(e: React.FormEvent) {
     e.preventDefault();
-    if (name.trim().split(/\s+/).length < 2) return setError('Informe nome e sobrenome');
+    const nameErr = personNameError(name);
+    if (nameErr) return setError(nameErr);
     if (!isPasswordValid(pw)) return setError('A senha não atende a todos os requisitos');
     if (pw !== confirm) return setError('As senhas não conferem');
     setBusy(true);
-    const err = await onAccept(code.trim().toUpperCase(), name.trim(), pw);
+    const err = await onAccept(code.trim().toUpperCase(), squish(name), pw);
     if (err) {
       setBusy(false);
       setError(err);

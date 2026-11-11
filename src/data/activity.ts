@@ -1,5 +1,5 @@
 import { RecycleIcon, CalendarIcon, GiftIcon } from '../components/Icons';
-import { fmtDay, SLOTS } from './catalog';
+import { fmtDay, pickupLabel } from './catalog';
 import type { Delivery, Material, Pickup, Redemption } from './catalog';
 
 export type ActivityKind = 'descarte' | 'coleta' | 'recompensa';
@@ -53,7 +53,7 @@ export function buildActivities(
   for (const p of pickups) {
     if (p.citizenEmail !== email) continue;
     const base = { id: `p${p.id}`, kind: 'coleta' as const, icon: CalendarIcon };
-    const when = `${fmtDay(p.date)} · ${SLOTS[p.slot].label}`;
+    const when = `${fmtDay(p.date)} · ${pickupLabel(p)}`;
     if (p.status === 'agendada')
       list.push({ ...base, title: 'Coleta agendada', sub: `${p.type} · ${when}`, at: p.at, status: 'Agendada', tone: 'warn' });
     else if (p.status === 'realizada')

@@ -1,6 +1,7 @@
 import { useState } from 'react';
 import EcoLogo, { LogoMark } from '../components/EcoLogo';
 import { ArrowLeftIcon, EyeIcon, EyeOffIcon } from '../components/Icons';
+import { emailError, personNameError, squish } from '../lib/validation';
 import PasswordRules, { isPasswordValid, Req } from '../components/PasswordRules';
 
 interface CadastroProps {
@@ -21,10 +22,10 @@ export default function Cadastro({ onSubmit, onBack }: CadastroProps) {
 
   function validate(): boolean {
     const e: Record<string, string> = {};
-    if (!name.trim()) e.name = 'Nome é obrigatório';
-    else if (name.trim().split(/\s+/).length < 2) e.name = 'Informe nome e sobrenome';
-    if (!email.trim()) e.email = 'E-mail é obrigatório';
-    else if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) e.email = 'E-mail inválido';
+    const nameErr = personNameError(name);
+    if (nameErr) e.name = nameErr;
+    const mailErr = emailError(email);
+    if (mailErr) e.email = mailErr;
     if (!password) e.password = 'Senha é obrigatória';
     else if (!isPasswordValid(password)) e.password = 'A senha não atende a todos os requisitos';
     if (!confirm) e.confirm = 'Confirme sua senha';
@@ -38,7 +39,7 @@ export default function Cadastro({ onSubmit, onBack }: CadastroProps) {
     e.preventDefault();
     if (!validate()) return;
     setLoading(true);
-    const err = await onSubmit(name.trim(), email.trim().toLowerCase(), password);
+    const err = await onSubmit(squish(name), email.trim().toLowerCase(), password);
     if (err) {
       setLoading(false);
       setErrors(/e-mail/i.test(err) ? { email: err } : { form: err });

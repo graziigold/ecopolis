@@ -1,7 +1,7 @@
-import { useMemo, useRef, useState } from "react"
+import { useEffect, useRef, useState } from "react"
 import type { UserData, Screen } from "../types"
-import { COLLECTION_TYPES, SLOTS, fmtDay, nextCollectionDays, parseDay, weekday } from "../data/catalog"
-import type { Pickup } from "../data/catalog"
+import { COLLECTION_TYPES, fmtDay, hourLabel } from "../data/catalog"
+import HorarioPicker, { type When } from "../components/HorarioPicker"
 import { AppLayout } from "../components/Nav"
 import {
   ArrowLeftIcon,
@@ -14,19 +14,24 @@ import {
   ClipboardIcon,
 } from "../components/Icons"
 import { Req } from "../components/PasswordRules"
+import { addressNumberError, textError } from "../lib/validation"
 
 interface ColetaProps {
   user: UserData
   navigate: (s: Screen) => void
-  onSchedule: (p: Pick<Pickup, "type" | "date" | "slot" | "address">) => Promise<boolean>
+  onSchedule: (p: { type: string; date: string; hour: number; address: string }) => Promise<boolean>
+  loadAvailability: () => Promise<Record<string, number> | null>
 }
 
 const TYPES = COLLECTION_TYPES
 
-export default function Coleta({ navigate, onSchedule }: ColetaProps) {
-  const days = useMemo(() => nextCollectionDays(6), [])
-  const [day, setDay] = useState(0)
-  const [slot, setSlot] = useState(0)
+export default function Coleta({ navigate, onSchedule, loadAvailability }: ColetaProps) {
+  const [when, setWhen] = useState<When | null>(null)
+  const [occupancy, setOccupancy] = useState<Record<string, number> | null>(null)
+  useEffect(() => {
+    loadAvailability().then((o) => setOccupancy(o ?? {}))
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [])
   const [type, setType] = useState(0)
   const [done, setDone] = useState(false)
   const [busy, setBusy] = useState(false)
@@ -88,7 +93,14 @@ export default function Coleta({ navigate, onSchedule }: ColetaProps) {
     if (formatted.replace(/\D/g, "").length === 8) buscarCep(formatted)
   }
 
-  const canConfirm = cepOk && rua.trim() !== "" && numero.trim() !== ""
+  const problem =
+    !cepOk || !rua.trim() || !numero.trim()
+      ? "Informe o CEP e o número para confirmar."
+      : textError(rua, "a rua", { max: 120 }) ??
+        addressNumberError(numero) ??
+        textError(complemento, "o complemento", { optional: true, min: 1, max: 60 }) ??
+        (!when ? "Escolha o dia e o horário." : null)
+  const canConfirm = !problem
 
   const fullAddress = `${rua}${numero ? `, ${numero}` : ""}${
     complemento ? `, ${complemento}` : ""
@@ -119,13 +131,13 @@ export default function Coleta({ navigate, onSchedule }: ColetaProps) {
             <div className="flex items-center gap-3">
               <CalendarIcon size={16} className="text-eco-600" />
               <span className="text-eco-800 text-sm font-body font-semibold">
-                {fmtDay(days[day])}
+                {when && fmtDay(when.date)}
               </span>
             </div>
             <div className="flex items-center gap-3">
               <ClockIcon size={16} className="text-eco-600" />
               <span className="text-eco-800 text-sm font-body font-semibold">
-                {SLOTS[slot].label}
+                {when && hourLabel(when.hour)}
               </span>
             </div>
             <div className="flex items-center gap-3">
@@ -264,7 +276,8 @@ export default function Coleta({ navigate, onSchedule }: ColetaProps) {
             <input
               ref={numeroRef}
               value={numero}
-              onChange={(e) => setNumero(e.target.value)}
+              onChange={(e) => setNumero(e.target.value.toUpperCase().replace(/[^0-9A-Z/]/g, "").slice(0, 7))}
+              maxLength={7}
               placeholder="Número"
               inputMode="numeric"
               className="col-span-1 w-full bg-white border border-eco-200 rounded-2xl px-4 py-3.5 text-sm font-body text-eco-800 placeholder:text-eco-300 focus:outline-none focus:border-eco-400 focus:ring-2 focus:ring-eco-100 transition-all"
@@ -273,6 +286,7 @@ export default function Coleta({ navigate, onSchedule }: ColetaProps) {
             <input
               value={complemento}
               onChange={(e) => setComplemento(e.target.value)}
+              maxLength={60}
               placeholder="Complemento (opcional)"
               className="col-span-2 w-full bg-white border border-eco-200 rounded-2xl px-4 py-3.5 text-sm font-body text-eco-800 placeholder:text-eco-300 focus:outline-none focus:border-eco-400 focus:ring-2 focus:ring-eco-100 transition-all"
             />
@@ -327,74 +341,16 @@ export default function Coleta({ navigate, onSchedule }: ColetaProps) {
           ))}
         </div>
 
-        {/* Day */}
-        <h2 className="font-display font-semibold text-eco-800 text-xs mb-3 uppercase tracking-wider">
-          Escolha o dia
-          <Req />
-        </h2>
-        <div
-          className="grid grid-cols-6 gap-2 mb-6"
-          role="group"
-          aria-label="Dia da coleta"
-          aria-required="true"
-        >
-          {days.map((iso, i) => (
-            <button
-              key={iso}
-              onClick={() => setDay(i)}
-              className={`rounded-2xl py-3 border flex flex-col items-center gap-1 transition-all ${
-                day === i
-                  ? "border-eco-400 bg-eco-50 ring-1 ring-eco-300"
-                  : "border-eco-100 bg-white hover:border-eco-200"
-              }`}
-            >
-              <span className="text-[11px] font-body text-eco-400">
-                {weekday(iso)}
-              </span>
-              <span
-                className={`font-display font-bold text-base ${
-                  day === i ? "text-eco-800" : "text-eco-600"
-                }`}
-              >
-                {parseDay(iso).getDate()}
-              </span>
-            </button>
-          ))}
-        </div>
-
-        {/* Slot */}
-        <h2 className="font-display font-semibold text-eco-800 text-xs mb-3 uppercase tracking-wider">
-          Horário
-          <Req />
-        </h2>
-        <div
-          className="grid grid-cols-2 gap-3 mb-8"
-          role="group"
-          aria-label="Horário da coleta"
-          aria-required="true"
-        >
-          {SLOTS.map((s, i) => (
-            <button
-              key={s.label}
-              onClick={() => setSlot(i)}
-              className={`rounded-2xl py-3.5 border font-body font-semibold text-sm flex items-center justify-center gap-2 transition-all ${
-                slot === i
-                  ? "border-eco-800 bg-eco-800 text-white"
-                  : "border-eco-100 bg-white text-eco-600 hover:border-eco-200"
-              }`}
-            >
-              <ClockIcon size={15} />
-              {s.label}
-            </button>
-          ))}
-        </div>
+        <HorarioPicker value={when} onChange={setWhen} occupancy={occupancy ?? {}} loading={!occupancy} />
 
         <button
           onClick={async () => {
+            if (!when) return
             setBusy(true)
-            const ok = await onSchedule({ type: TYPES[type], date: days[day], slot, address: fullAddress })
+            const ok = await onSchedule({ type: TYPES[type], date: when.date, hour: when.hour, address: fullAddress })
             setBusy(false)
             if (ok) setDone(true)
+            else loadAvailability().then((o) => o && setOccupancy(o))
           }}
           disabled={!canConfirm || busy}
           className="w-full py-3.5 rounded-xl text-white font-display font-semibold text-sm shadow-sm disabled:opacity-40 disabled:cursor-not-allowed"
@@ -404,7 +360,7 @@ export default function Coleta({ navigate, onSchedule }: ColetaProps) {
         </button>
         {!canConfirm && (
           <p className="text-eco-400 text-xs font-body text-center mt-2">
-            Informe o CEP e o número para confirmar.
+            {problem}
           </p>
         )}
 

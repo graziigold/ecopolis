@@ -153,6 +153,12 @@ export default function Operador({ user, navigate, deliveries, materials, onLook
                   <button onClick={reset} className="text-sm text-eco-500 hover:text-eco-800">Cancelar</button>
                 </div>
 
+                {current.photo && (
+                  <a href={current.photo} target="_blank" rel="noreferrer" className="block mb-3">
+                    <img src={current.photo} alt="Foto enviada pelo cidadão" className="w-full max-h-64 object-cover rounded-xl border border-eco-100" />
+                    <span className="block text-eco-400 text-xs font-body mt-1">Foto enviada pelo cidadão, toque para ampliar</span>
+                  </a>
+                )}
                 <div className="rounded-xl bg-eco-50 px-4 py-3 mb-5 flex justify-between text-sm font-body">
                   <span className="text-eco-500">Declarado</span>
                   <span className="text-eco-800 font-semibold">{label(current.materialKey)} · {current.declaredKg} kg · ~{estimated} Ecopontos</span>

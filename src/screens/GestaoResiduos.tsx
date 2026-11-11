@@ -1,17 +1,21 @@
-import { useState } from 'react';
+import { useRef, useState } from 'react';
 import type { Screen } from '../types';
 import { AppLayout } from '../components/Nav';
-import { CheckCircleIcon, PlusIcon, RecycleIcon } from '../components/Icons';
+import { CameraIcon, CheckCircleIcon, PlusIcon, RecycleIcon } from '../components/Icons';
+import { imageFileError, toSquareJpeg } from '../lib/image';
 import { Req } from '../components/PasswordRules';
+import { squish, textError } from '../lib/validation';
 import type { Material } from '../data/catalog';
 
 interface Props {
   navigate: (s: Screen) => void;
   materials: Material[];
   onSave: (m: Material[]) => Promise<boolean>;
+  /** Envia (data URL) ou remove (null) a foto de um material já salvo. */
+  onPhoto: (key: string, dataUrl: string | null) => Promise<boolean>;
 }
 
-export default function GestaoResiduos({ navigate, materials, onSave }: Props) {
+export default function GestaoResiduos({ navigate, materials, onSave, onPhoto }: Props) {
   const [draft, setDraft] = useState<Material[]>(materials);
   const [saved, setSaved] = useState(false);
   const [saving, setSaving] = useState(false);
@@ -19,7 +23,44 @@ export default function GestaoResiduos({ navigate, materials, onSave }: Props) {
   const [newRate, setNewRate] = useState('');
   const [addError, setAddError] = useState('');
 
-  const dirty = JSON.stringify(draft.map(({ icon, ...r }) => r)) !== JSON.stringify(materials.map(({ icon, ...r }) => r));
+  const [photoKey, setPhotoKey] = useState<string | null>(null);
+  const [photoBusy, setPhotoBusy] = useState<string | null>(null);
+  const [photoError, setPhotoError] = useState('');
+  const fileRef = useRef<HTMLInputElement | null>(null);
+
+  // A foto é salva na hora (rota própria); não entra no "alterações não salvas".
+  const comparable = (l: Material[]) => JSON.stringify(l.map(({ icon: _i, photo: _p, photoPath: _pp, ...r }) => r));
+  const dirty = comparable(draft) !== comparable(materials);
+  const savedPhoto = (key: string) => materials.find((x) => x.key === key)?.photo;
+  const isSaved = (key: string) => materials.some((x) => x.key === key);
+
+  function pickPhoto(key: string) {
+    setPhotoError('');
+    setPhotoKey(key);
+    fileRef.current?.click();
+  }
+
+  async function onFile(e: React.ChangeEvent<HTMLInputElement>) {
+    const file = e.target.files?.[0];
+    e.target.value = '';
+    if (!file || !photoKey) return;
+    const err = imageFileError(file);
+    if (err) return setPhotoError(err);
+    setPhotoBusy(photoKey);
+    try {
+      await onPhoto(photoKey, await toSquareJpeg(file, 400));
+    } catch {
+      setPhotoError('Não foi possível ler essa imagem. Tente outra.');
+    } finally {
+      setPhotoBusy(null);
+    }
+  }
+
+  async function removePhoto(key: string) {
+    setPhotoBusy(key);
+    await onPhoto(key, null);
+    setPhotoBusy(null);
+  }
   const invalid = draft.some((m) => !Number.isFinite(m.rate) || m.rate <= 0);
 
   function update(key: string, patch: Partial<Material>) {
@@ -29,12 +70,14 @@ export default function GestaoResiduos({ navigate, materials, onSave }: Props) {
 
   function add() {
     const rate = Number(newRate);
-    if (!newName.trim()) return setAddError('Informe o nome do resíduo');
+    const nameErr = textError(newName, 'o nome do resíduo', { min: 3, max: 60 });
+    if (nameErr) return setAddError(nameErr);
+    if (!Number.isInteger(Number(newRate)) || Number(newRate) > 100_000) return setAddError('Use um número inteiro de Ecopontos por kg');
     if (!rate || rate <= 0) return setAddError('Informe um valor maior que zero');
-    if (draft.some((m) => m.label.toLowerCase() === newName.trim().toLowerCase())) return setAddError('Esse resíduo já existe');
+    if (draft.some((m) => m.label.toLowerCase() === squish(newName).toLowerCase())) return setAddError('Esse resíduo já existe');
     setDraft((d) => [
       ...d,
-      { key: `${newName.trim().toLowerCase().replace(/\s+/g, '-')}-${Date.now()}`, label: newName.trim(), rate, active: true, icon: RecycleIcon, color: '#2d7a3a', bg: '#e8f5e9' },
+      { key: `${newName.trim().toLowerCase().replace(/\s+/g, '-')}-${Date.now()}`, label: squish(newName), rate, active: true, icon: RecycleIcon, color: '#2d7a3a', bg: '#e8f5e9' },
     ]);
     setNewName(''); setNewRate(''); setAddError(''); setSaved(false);
   }
@@ -53,16 +96,35 @@ export default function GestaoResiduos({ navigate, materials, onSave }: Props) {
           <div className="hidden lg:grid grid-cols-[1fr_200px_120px_100px] gap-4 px-5 py-3 border-b border-eco-100 text-[11px] font-semibold uppercase tracking-wider text-eco-400">
             <span>Material</span><span>Ecopontos por kg</span><span>Exemplo (5 kg)</span><span className="text-right">Ativo</span>
           </div>
+          <input ref={fileRef} type="file" accept="image/jpeg,image/png,image/webp,image/*" onChange={onFile} className="sr-only" aria-label="Arquivo da foto do material" />
+          {photoError && <p role="alert" className="px-4 lg:px-5 py-2 text-xs text-red-600 bg-red-50 font-body">{photoError}</p>}
           {draft.map((m) => {
             const Icon = m.icon;
             const bad = !m.rate || m.rate <= 0;
             return (
               <div key={m.key} className={`grid grid-cols-[1fr_auto] lg:grid-cols-[1fr_200px_120px_100px] gap-x-4 gap-y-3 items-center px-4 lg:px-5 py-4 border-b border-eco-50 last:border-0 ${m.active ? '' : 'opacity-55'}`}>
                 <div className="flex items-center gap-3 min-w-0">
-                  <div className="w-10 h-10 rounded-xl flex items-center justify-center shrink-0" style={{ backgroundColor: m.bg }}>
-                    <Icon size={19} style={{ color: m.color }} />
+                  <button type="button" onClick={() => pickPhoto(m.key)} disabled={!isSaved(m.key) || photoBusy === m.key}
+                    title={isSaved(m.key) ? 'Enviar foto do material' : 'Salve o material antes de enviar a foto'}
+                    aria-label={`Foto de ${m.label}`}
+                    className="relative w-12 h-12 rounded-xl overflow-hidden shrink-0 flex items-center justify-center group disabled:cursor-not-allowed"
+                    style={{ backgroundColor: m.bg, color: m.color }}>
+                    {savedPhoto(m.key) ? <img src={savedPhoto(m.key)} alt="" className="w-full h-full object-cover" /> : <Icon size={20} />}
+                    {isSaved(m.key) && (
+                      <span className="absolute bottom-0.5 right-0.5 w-5 h-5 rounded-full bg-white/95 text-eco-800 flex items-center justify-center shadow group-hover:scale-110 transition-transform">
+                        <CameraIcon size={11} />
+                      </span>
+                    )}
+                    {photoBusy === m.key && <span className="absolute inset-0 bg-white/70 flex items-center justify-center text-[10px] text-eco-700 font-body">…</span>}
+                  </button>
+                  <div className="min-w-0">
+                    <span className="block font-body font-semibold text-eco-800 text-sm truncate">{m.label}</span>
+                    {savedPhoto(m.key) ? (
+                      <button type="button" onClick={() => removePhoto(m.key)} disabled={photoBusy === m.key} className="text-[11px] font-body text-eco-500 hover:text-red-600">Remover foto</button>
+                    ) : (
+                      <span className="text-[11px] font-body text-eco-400">{isSaved(m.key) ? 'Toque na imagem para enviar uma foto' : 'Salve para poder enviar foto'}</span>
+                    )}
                   </div>
-                  <span className="font-body font-semibold text-eco-800 text-sm truncate">{m.label}</span>
                 </div>
 
                 <div className="col-span-2 lg:col-span-1 row-start-2 lg:row-start-auto flex items-center gap-2">

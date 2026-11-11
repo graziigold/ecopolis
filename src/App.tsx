@@ -9,6 +9,8 @@ import { api, authMessage, supabase } from './lib/supabase';
 import MinhasColetas from './screens/MinhasColetas';
 import EditarPerfil from './screens/EditarPerfil';
 import GestaoSugestoes from './screens/GestaoSugestoes';
+import GestaoContas from './screens/GestaoContas';
+import type { Account } from './screens/GestaoContas';
 import OperadorColetas from './screens/OperadorColetas';
 import Operador from './screens/Operador';
 import GestaoParceiros from './screens/GestaoParceiros';
@@ -241,12 +243,22 @@ export default function App() {
   }
 
   // ---------------------------------------------------------------- cidadão
-  const handleRegister = async (materialKey: string, kg: number) =>
-    (await run(() => api<{ delivery: Delivery }>('/deliveries', { body: { materialKey, kg } })))?.delivery.code ?? null;
+  const handleRegister = async (materialKey: string, kg: number, photo: string) =>
+    (await run(() => api<{ delivery: Delivery }>('/deliveries', { body: { materialKey, kg, photo } })))?.delivery.code ?? null;
 
-  const handleSchedule = async (p: Pick<Pickup, 'type' | 'date' | 'slot' | 'address'>) =>
+  const handleSchedule = async (p: { type: string; date: string; hour: number; address: string }) =>
     !!(await run(() => api('/pickups', { body: p })));
 
+  const loadAvailability = async () => {
+    try {
+      return (await api<{ occupancy: Record<string, number> }>('/pickups/availability')).occupancy;
+    } catch (e) {
+      showToast(errMsg(e));
+      return null;
+    }
+  };
+  const handleReschedule = async (id: number, when: { date: string; hour: number }) =>
+    !!(await run(() => api(`/pickups/${id}/reschedule`, { body: when }), 'Coleta remarcada.'));
   const handleCancelPickup = async (id: number) => !!(await run(() => api(`/pickups/${id}/cancel`, { body: {} }), 'Coleta cancelada.'));
 
   const handleRedeem = async (r: Reward) => !!(await run(() => api('/redeem', { body: { rewardId: r.id } })));
@@ -300,6 +312,23 @@ export default function App() {
   const handleApprove = async (s: Suggestion, edits: { address: string; materials: string[]; hours: string; coords?: { lat: number; lng: number } }) =>
     !!(await run(() => api(`/suggestions/${s.id}/approve`, { body: edits })));
 
+  const handleMaterialPhoto = async (key: string, dataUrl: string | null) =>
+    !!(await run(() =>
+      dataUrl
+        ? api(`/catalog/materials/${encodeURIComponent(key)}/photo`, { body: { dataUrl } })
+        : api(`/catalog/materials/${encodeURIComponent(key)}/photo`, { method: 'DELETE' }),
+    ));
+
+  async function loadAccounts() {
+    try {
+      return await api<{ accounts: Account[]; inactiveDays: number }>('/accounts');
+    } catch (e) {
+      showToast(errMsg(e));
+      return null;
+    }
+  }
+  const handleDeleteAccount = async (id: string) => !!(await run(() => api(`/accounts/${encodeURIComponent(id)}`, { method: 'DELETE' }), 'Conta excluída.'));
+
   const handleReject = async (s: Suggestion, reason: string) => !!(await run(() => api(`/suggestions/${s.id}/reject`, { body: { reason } })));
 
   async function handleInvite(email: string, role: 'gestor' | 'operador'): Promise<StaffMember | string> {
@@ -333,7 +362,20 @@ export default function App() {
         <RecuperarSenha
           recovering={recovering}
           onBack={() => { setRecovering(false); navigate('login'); }}
-          onDone={async () => { setRecovering(false); await supabase.auth.signOut(); setUser(null); navigate('login'); }}
+          onDone={async () => {
+            setRecovering(false);
+            window.history.replaceState(null, '', window.location.pathname + window.location.search);
+            try {
+              const u = await refresh();
+              showToast('Senha alterada. Bem-vindo de volta!', 'ok');
+              if (u) navigate(HOME[u.role]);
+            } catch {
+              await supabase.auth.signOut();
+              setUser(null);
+              showToast('Senha alterada. Entre com a nova senha.', 'ok');
+              navigate('login');
+            }
+          }}
         />
       )}
       {screen === 'cadastro' && <Cadastro onSubmit={handleSignup} onBack={() => navigate('login')} />}
@@ -354,8 +396,8 @@ export default function App() {
       {screen === 'ecopontos' && user && isCitizen && <Ecopontos user={user} navigate={navigate} locations={locations} />}
       {screen === 'registrarEcoponto' && user && isCitizen && <RegistrarEcoponto user={user} navigate={navigate} onSubmit={handleSuggest} />}
       {screen === 'descarte' && user && isCitizen && <Descarte user={user} navigate={navigate} onRegister={handleRegister} materials={materials} />}
-      {screen === 'coleta' && user && isCitizen && <Coleta user={user} navigate={navigate} onSchedule={handleSchedule} />}
-      {screen === 'minhasColetas' && user && isCitizen && <MinhasColetas user={user} navigate={navigate} pickups={pickups} onCancel={handleCancelPickup} />}
+      {screen === 'coleta' && user && isCitizen && <Coleta user={user} navigate={navigate} onSchedule={handleSchedule} loadAvailability={loadAvailability} />}
+      {screen === 'minhasColetas' && user && isCitizen && <MinhasColetas user={user} navigate={navigate} pickups={pickups} onCancel={handleCancelPickup} onReschedule={handleReschedule} loadAvailability={loadAvailability} />}
       {screen === 'loja' && user && isCitizen && <Loja user={user} navigate={navigate} onRedeem={handleRedeem} rewards={rewards} partners={partners} />}
       {screen === 'ranking' && user && isCitizen && <Ranking user={user} navigate={navigate} ranking={ranking} />}
       {screen === 'notificacoes' && user && isCitizen && (
@@ -366,7 +408,7 @@ export default function App() {
         <Gestao user={user} navigate={navigate} materials={materials} rewards={rewards} suggestions={suggestions} kpis={kpis} onLogout={handleLogout} />
       )}
       {screen === 'gestaoResiduos' && isManager && (
-        <GestaoResiduos navigate={navigate} materials={materials} onSave={(m) => saveCatalog('materials', m.map(stripMaterial))} />
+        <GestaoResiduos navigate={navigate} materials={materials} onSave={(m) => saveCatalog('materials', m.map(stripMaterial))} onPhoto={handleMaterialPhoto} />
       )}
       {screen === 'gestaoRecompensas' && isManager && (
         <GestaoRecompensas navigate={navigate} rewards={rewards} partners={partners} onSave={(r) => saveCatalog('rewards', r.map(stripReward))} />
@@ -376,6 +418,9 @@ export default function App() {
       )}
       {screen === 'gestaoEquipe' && isManager && (
         <GestaoEquipe navigate={navigate} staff={staff} onInvite={handleInvite} onResend={handleResend} onRevoke={handleRevoke} />
+      )}
+      {screen === 'gestaoContas' && isManager && (
+        <GestaoContas navigate={navigate} onLoad={loadAccounts} onDelete={handleDeleteAccount} />
       )}
       {screen === 'gestaoSugestoes' && isManager && (
         <GestaoSugestoes navigate={navigate} suggestions={suggestions} locations={locations} onApprove={handleApprove} onReject={handleReject} />

@@ -1,7 +1,7 @@
 import { levelProgress as progressOf } from '../types';
 import type { UserData, Screen } from '../types';
 import type { Delivery, Material, Pickup, Redemption, Ranking } from '../data/catalog';
-import { fmtDay, fmtWhen, SLOTS } from '../data/catalog';
+import { comparePickups, fmtDay, fmtWhen, pickupLabel } from '../data/catalog';
 import { buildActivities, TONE_STYLE } from '../data/activity';
 import { AppLayout } from '../components/Nav';
 import Avatar from '../components/Avatar';
@@ -43,7 +43,7 @@ export default function Home({ user, navigate, hasUnread, onOpenNotifications, d
   const recent = buildActivities(user.email, deliveries, pickups, redemptions, materials).slice(0, 4);
   const nextPickup = pickups
     .filter((p) => p.citizenEmail === user.email && p.status === 'agendada')
-    .sort((a, b) => a.date.localeCompare(b.date) || a.slot - b.slot)[0];
+    .sort(comparePickups)[0];
   const label = (k?: string) => materials.find((m) => m.key === k)?.label ?? k;
   const levelProgress = progressOf(user);
   const position = ranking?.geral.position;
@@ -166,7 +166,7 @@ export default function Home({ user, navigate, hasUnread, onOpenNotifications, d
             <div className="flex-1 min-w-0">
               <div className="text-[11px] font-semibold uppercase tracking-wider text-eco-400 font-body">Próxima coleta</div>
               <div className="font-body font-semibold text-eco-800 text-sm truncate">
-                {fmtDay(nextPickup.date)} · {SLOTS[nextPickup.slot].label}
+                {fmtDay(nextPickup.date)} · {pickupLabel(nextPickup)}
               </div>
               <div className="text-eco-400 text-xs font-body truncate">{nextPickup.type}</div>
             </div>

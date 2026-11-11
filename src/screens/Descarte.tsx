@@ -1,4 +1,4 @@
-import { useState } from "react"
+import { useRef, useState } from "react"
 import type { UserData, Screen } from "../types"
 import { AppLayout } from "../components/Nav"
 import {
@@ -8,11 +8,12 @@ import {
 } from "../components/Icons"
 import { Req } from "../components/PasswordRules"
 import type { Material } from "../data/catalog"
+import { imageFileError, toSquareJpeg } from "../lib/image"
 
 interface DescarteProps {
   user: UserData
   navigate: (s: Screen) => void
-  onRegister: (materialKey: string, kg: number) => Promise<string | null>
+  onRegister: (materialKey: string, kg: number, photo: string) => Promise<string | null>
   materials: Material[]
 }
 
@@ -24,13 +25,35 @@ export default function Descarte({ navigate, onRegister, materials }: DescartePr
   const [weight, setWeight] = useState(1)
   const [done, setDone] = useState<string | null>(null)
   const [busy, setBusy] = useState(false)
+  const [photo, setPhoto] = useState<string | null>(null)
+  const [photoError, setPhotoError] = useState("")
+  const [processing, setProcessing] = useState(false)
+  const fileRef = useRef<HTMLInputElement | null>(null)
 
   const earned = Math.round(material.rate * weight)
 
+  async function pickPhoto(e: React.ChangeEvent<HTMLInputElement>) {
+    const file = e.target.files?.[0]
+    e.target.value = ""
+    if (!file) return
+    const err = imageFileError(file, 15)
+    if (err) return setPhotoError(err)
+    setPhotoError("")
+    setProcessing(true)
+    try {
+      setPhoto(await toSquareJpeg(file, 720))
+    } catch {
+      setPhotoError("Não foi possível ler essa imagem. Tente outra foto.")
+    } finally {
+      setProcessing(false)
+    }
+  }
+
   async function handleSubmit() {
     if (busy) return
+    if (!photo) return setPhotoError("Tire ou escolha uma foto do material para continuar.")
     setBusy(true)
-    const code = await onRegister(material.key, weight)
+    const code = await onRegister(material.key, weight, photo)
     setBusy(false)
     if (code) setDone(code)
   }
@@ -150,12 +173,16 @@ export default function Descarte({ navigate, onRegister, materials }: DescartePr
                     : "border-eco-100 bg-white hover:border-eco-200"
                 }`}
               >
-                <div
-                  className="w-10 h-10 rounded-xl flex items-center justify-center"
-                  style={{ backgroundColor: m.bg }}
-                >
-                  <Icon size={20} style={{ color: m.color }} />
-                </div>
+                {m.photo ? (
+                  <img src={m.photo} alt="" className="w-14 h-14 rounded-xl object-cover" />
+                ) : (
+                  <div
+                    className="w-10 h-10 rounded-xl flex items-center justify-center"
+                    style={{ backgroundColor: m.bg, color: m.color }}
+                  >
+                    <Icon size={20} />
+                  </div>
+                )}
                 <span className="text-eco-700 text-xs font-semibold font-body">
                   {m.label}
                 </span>
@@ -195,19 +222,58 @@ export default function Descarte({ navigate, onRegister, materials }: DescartePr
 
         {/* Photo */}
         <h2 className="font-display font-semibold text-eco-800 text-xs mb-3 uppercase tracking-wider">
-          Comprovação
+          Foto do material
+          <Req />
         </h2>
-        <button className="w-full rounded-2xl border-2 border-dashed border-eco-200 bg-eco-50/50 py-8 flex flex-col items-center gap-2 mb-6 hover:border-eco-300 transition-colors">
-          <div className="w-12 h-12 rounded-full bg-white border border-eco-100 flex items-center justify-center">
-            <CameraIcon size={22} className="text-eco-500" />
+        <input
+          ref={fileRef}
+          type="file"
+          accept="image/*"
+          capture="environment"
+          onChange={pickPhoto}
+          className="sr-only"
+          aria-label="Foto do material"
+        />
+        {photo ? (
+          <div className="flex items-center gap-4 rounded-2xl border border-eco-200 bg-white p-3 mb-2">
+            <img src={photo} alt="Foto do material" className="w-20 h-20 rounded-xl object-cover" />
+            <div className="flex-1 min-w-0">
+              <div className="text-eco-800 text-sm font-body font-semibold">Foto adicionada</div>
+              <div className="text-eco-400 text-xs font-body">O operador confere a foto na entrega.</div>
+            </div>
+            <button
+              type="button"
+              onClick={() => fileRef.current?.click()}
+              className="shrink-0 h-9 px-3.5 rounded-xl border border-eco-200 text-eco-700 text-xs font-display font-semibold hover:bg-eco-50"
+            >
+              Trocar
+            </button>
           </div>
-          <span className="text-eco-600 text-sm font-body font-semibold">
-            Adicionar foto do material
-          </span>
-          <span className="text-eco-400 text-xs font-body">
-            Opcional, acelera a validação
-          </span>
-        </button>
+        ) : (
+          <button
+            type="button"
+            onClick={() => fileRef.current?.click()}
+            disabled={processing}
+            className={`w-full rounded-2xl border-2 border-dashed py-8 flex flex-col items-center gap-2 mb-2 transition-colors ${
+              photoError ? "border-red-300 bg-red-50/40" : "border-eco-200 bg-eco-50/50 hover:border-eco-300"
+            }`}
+          >
+            <div className="w-12 h-12 rounded-full bg-white border border-eco-100 flex items-center justify-center">
+              <CameraIcon size={22} className="text-eco-500" />
+            </div>
+            <span className="text-eco-600 text-sm font-body font-semibold">
+              {processing ? "Preparando a foto…" : "Tirar ou escolher foto"}
+            </span>
+            <span className="text-eco-400 text-xs font-body">
+              Obrigatória: mostre o material separado e limpo
+            </span>
+          </button>
+        )}
+        {photoError ? (
+          <p role="alert" className="text-red-500 text-xs font-body mb-4">{photoError}</p>
+        ) : (
+          <div className="mb-4" />
+        )}
 
         {/* Summary */}
         <div
@@ -229,12 +295,15 @@ export default function Descarte({ navigate, onRegister, materials }: DescartePr
 
         <button
           onClick={handleSubmit}
-          disabled={busy}
+          disabled={busy || processing || !photo}
           className="w-full py-3.5 rounded-xl text-white font-display font-semibold text-sm shadow-sm disabled:opacity-60"
           style={{ background: "linear-gradient(135deg, #2d7a3a, #1d5c2a)" }}
         >
           {busy ? "Registrando…" : "Confirmar descarte"}
         </button>
+        {!photo && (
+          <p className="text-eco-400 text-xs font-body text-center mt-2">Adicione a foto do material para confirmar.</p>
+        )}
 
         <div className="h-4" />
       </div>

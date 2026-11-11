@@ -47,6 +47,8 @@ const managerItems = [
   { label: 'Parceiros', icon: PackageIcon, screen: 'gestaoParceiros' as Screen },
   { label: 'Equipe', icon: UserIcon, screen: 'gestaoEquipe' as Screen },
   { label: 'Sugestões', icon: MapPinIcon, screen: 'gestaoSugestoes' as Screen },
+  // Só na barra lateral; no celular fica dentro de Equipe (barra inferior com espaço limitado).
+  { label: 'Contas', icon: UserIcon, screen: 'gestaoContas' as Screen, desktopOnly: true },
 ];
 
 const operatorItems = [
@@ -57,15 +59,16 @@ const operatorItems = [
 const isManager = (s: Screen) => s.startsWith('gestao');
 // Sub-telas destacam o item de menu ao qual pertencem.
 const PARENT: Partial<Record<Screen, Screen>> = { registrarEcoponto: 'ecopontos', notificacoes: 'home', editarPerfil: 'perfil' };
+const MOBILE_PARENT: Partial<Record<Screen, Screen>> = { gestaoContas: 'gestaoEquipe' };
 const isActiveItem = (item: Screen, screen: Screen) => item === screen || PARENT[screen] === item;
 const isOperator = (s: Screen) => s.startsWith('operador');
 
 export function BottomNav({ screen, navigate }: NavProps) {
   return (
     <nav className={`${isOperator(screen) ? 'hidden' : 'lg:hidden'} fixed bottom-0 left-0 right-0 bg-white border-t border-eco-100 h-16 flex items-center z-50`}>
-      {(isManager(screen) ? managerItems.map((i) => ({ ...i, label: i.label.split(' ')[0] })) : mobileItems).map((item) => {
+      {(isManager(screen) ? managerItems.filter((i) => !('desktopOnly' in i)).map((i) => ({ ...i, label: i.label.split(' ')[0] })) : mobileItems).map((item) => {
         const Icon = item.icon;
-        const isActive = isActiveItem(item.screen, screen);
+        const isActive = isActiveItem(item.screen, screen) || MOBILE_PARENT[screen] === item.screen;
 
         return (
           <button

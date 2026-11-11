@@ -1,8 +1,9 @@
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
+import HorarioPicker, { type When } from '../components/HorarioPicker';
 import type { Screen, UserData } from '../types';
 import { AppLayout } from '../components/Nav';
 import { ArrowLeftIcon, CalendarIcon, ClockIcon, HomeAddressIcon, PlusIcon, RecycleIcon } from '../components/Icons';
-import { PICKUP_STATUS_LABEL, SLOTS, canCancelPickup, fmtDay } from '../data/catalog';
+import { PICKUP_STATUS_LABEL, canCancelPickup, comparePickups, fmtDay, hourLabel, pickupCoveredHours, pickupLabel } from '../data/catalog';
 import type { Pickup, PickupStatus } from '../data/catalog';
 
 interface Props {
@@ -10,6 +11,8 @@ interface Props {
   navigate: (s: Screen) => void;
   pickups: Pickup[];
   onCancel: (id: number) => Promise<boolean>;
+  onReschedule: (id: number, when: When) => Promise<boolean>;
+  loadAvailability: () => Promise<Record<string, number> | null>;
 }
 
 const STATUS_STYLE: Record<PickupStatus, string> = {
@@ -19,11 +22,28 @@ const STATUS_STYLE: Record<PickupStatus, string> = {
   cancelada: 'bg-eco-50 text-eco-500',
 };
 
-export default function MinhasColetas({ user, navigate, pickups, onCancel }: Props) {
+export default function MinhasColetas({ user, navigate, pickups, onCancel, onReschedule, loadAvailability }: Props) {
   const [confirming, setConfirming] = useState<Pickup | null>(null);
+  const [moving, setMoving] = useState<Pickup | null>(null);
+  const [when, setWhen] = useState<When | null>(null);
+  const [occupancy, setOccupancy] = useState<Record<string, number> | null>(null);
+  useEffect(() => {
+    if (!moving) return;
+    setOccupancy(null);
+    loadAvailability().then((o) => {
+      // A própria coleta não deve contar como vaga ocupada ao remarcar.
+      const next = { ...(o ?? {}) };
+      for (const h of pickupCoveredHours(moving)) {
+        const k = `${moving.date}|${h}`;
+        if (next[k]) next[k] -= 1;
+      }
+      setOccupancy(next);
+    });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [moving]);
   const [busy, setBusy] = useState(false);
   const mine = pickups.filter((p) => p.citizenEmail === user.email);
-  const upcoming = mine.filter((p) => p.status === 'agendada').sort((a, b) => a.date.localeCompare(b.date) || a.slot - b.slot);
+  const upcoming = mine.filter((p) => p.status === 'agendada').sort(comparePickups);
   const past = mine.filter((p) => p.status !== 'agendada').sort((a, b) => (b.resolvedAt ?? b.at) - (a.resolvedAt ?? a.at));
 
   const Card = ({ p }: { p: Pickup }) => {
@@ -39,7 +59,7 @@ export default function MinhasColetas({ user, navigate, pickups, onCancel }: Pro
               <div className="font-body font-semibold text-eco-900 text-sm truncate">{p.type}</div>
               <div className="text-xs text-eco-500 font-body flex flex-wrap items-center gap-x-3 gap-y-0.5 mt-0.5">
                 <span className="inline-flex items-center gap-1 whitespace-nowrap"><CalendarIcon size={12} /> {fmtDay(p.date)}</span>
-                <span className="inline-flex items-center gap-1 whitespace-nowrap"><ClockIcon size={12} /> {SLOTS[p.slot].label}</span>
+                <span className="inline-flex items-center gap-1 whitespace-nowrap"><ClockIcon size={12} /> {pickupLabel(p)}</span>
               </div>
             </div>
           </div>
@@ -60,15 +80,23 @@ export default function MinhasColetas({ user, navigate, pickups, onCancel }: Pro
         {p.status === 'agendada' && (
           <div className="mt-3 pt-3 border-t border-eco-50 flex items-center justify-between gap-3">
             <span className="text-[11px] text-eco-400 font-body">
-              {cancellable ? 'Cancelamento permitido até o início do horário.' : 'O horário já começou e não é mais possível cancelar.'}
+              {cancellable ? 'Remarque ou cancele até o início do horário.' : 'O horário já começou e não é mais possível alterar.'}
             </span>
             {cancellable && (
+              <div className="flex gap-2 shrink-0">
+              <button
+                onClick={() => { setWhen(null); setMoving(p); }}
+                className="h-9 px-4 rounded-xl text-xs font-display font-semibold text-eco-700 border border-eco-200 hover:bg-eco-50 transition-colors"
+              >
+                Remarcar
+              </button>
               <button
                 onClick={() => setConfirming(p)}
                 className="shrink-0 h-9 px-4 rounded-xl text-xs font-display font-semibold text-red-600 border border-red-200 hover:bg-red-50 transition-colors"
               >
                 Cancelar
               </button>
+              </div>
             )}
           </div>
         )}
@@ -126,12 +154,42 @@ export default function MinhasColetas({ user, navigate, pickups, onCancel }: Pro
         <div className="h-4" />
       </div>
 
+      {moving && (
+        <div className="fixed inset-0 z-[60] flex items-end sm:items-center justify-center sm:p-6 bg-eco-950/40 backdrop-blur-sm" role="dialog" aria-modal="true" aria-labelledby="move-title">
+          <div className="bg-white rounded-t-3xl sm:rounded-3xl p-5 sm:p-6 max-w-lg w-full max-h-[90vh] overflow-y-auto animate-splash-in">
+            <h2 id="move-title" className="font-display font-bold text-eco-900 text-lg mb-1">Remarcar coleta</h2>
+            <p className="text-eco-500 text-sm font-body mb-5">
+              {moving.type}. Atual: {fmtDay(moving.date)}, {pickupLabel(moving)}.
+            </p>
+            <HorarioPicker value={when} onChange={setWhen} occupancy={occupancy ?? {}} loading={!occupancy} />
+            <div className="flex gap-2">
+              <button onClick={() => setMoving(null)} className="flex-1 h-11 rounded-xl border border-eco-200 text-eco-700 text-sm font-display font-semibold hover:bg-eco-50">
+                Voltar
+              </button>
+              <button
+                disabled={busy || !when || (when.date === moving.date && when.hour === moving.hour)}
+                onClick={async () => {
+                  if (!when) return;
+                  setBusy(true);
+                  const ok = await onReschedule(moving.id, when);
+                  setBusy(false);
+                  if (ok) setMoving(null);
+                }}
+                className="flex-1 h-11 rounded-xl bg-eco-800 text-white text-sm font-display font-semibold hover:bg-eco-900 disabled:opacity-50"
+              >
+                {busy ? 'Salvando…' : when ? `Remarcar para ${hourLabel(when.hour).slice(0, 3)}` : 'Remarcar'}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
       {confirming && (
         <div className="fixed inset-0 z-[60] flex items-center justify-center p-6 bg-eco-950/40 backdrop-blur-sm" role="dialog" aria-modal="true" aria-labelledby="cancel-title">
           <div className="bg-white rounded-3xl p-6 max-w-sm w-full animate-splash-in">
             <h2 id="cancel-title" className="font-display font-bold text-eco-900 text-lg mb-1">Cancelar coleta?</h2>
             <p className="text-eco-500 text-sm font-body mb-5">
-              {confirming.type} · {fmtDay(confirming.date)}, {SLOTS[confirming.slot].label}. A coleta sai da agenda da equipe.
+              {confirming.type} · {fmtDay(confirming.date)}, {pickupLabel(confirming)}. A coleta sai da agenda da equipe.
             </p>
             <div className="flex gap-2">
               <button onClick={() => setConfirming(null)} className="flex-1 h-11 rounded-xl border border-eco-200 text-eco-700 text-sm font-display font-semibold hover:bg-eco-50">

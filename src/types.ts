@@ -21,6 +21,7 @@ export type Screen =
   | 'gestaoParceiros'
   | 'gestaoEquipe'
   | 'gestaoSugestoes'
+  | 'gestaoContas'
   | 'aceitarConvite'
   | 'primeiroGestor'
   | 'operador'

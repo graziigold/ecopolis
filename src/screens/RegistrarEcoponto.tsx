@@ -9,6 +9,7 @@ import {
   CheckCircleIcon,
 } from "../components/Icons"
 import { Req } from "../components/PasswordRules"
+import { addressNumberError, squish, textError } from "../lib/validation"
 import { LOCATION_MATERIALS } from "../data/catalog"
 import type { Suggestion } from "../data/catalog"
 
@@ -92,12 +93,15 @@ export default function RegistrarEcoponto({
     )
   }
 
-  const canConfirm =
-    nome.trim() !== "" &&
-    cepOk &&
-    rua.trim() !== "" &&
-    numero.trim() !== "" &&
-    tipos.length > 0
+  const missing = !nome.trim() || !cepOk || !rua.trim() || !numero.trim() || tipos.length === 0
+  const problem = missing
+    ? "Preencha nome, endereço (com número) e ao menos um material."
+    : textError(nome, "o nome do ponto", { min: 3, max: 80 }) ??
+      textError(rua, "a rua", { max: 120 }) ??
+      addressNumberError(numero) ??
+      textError(complemento, "o complemento", { optional: true, min: 1, max: 60 }) ??
+      textError(obs, "as observações", { optional: true, max: 500 })
+  const canConfirm = !problem
 
   const fullAddress = `${rua}${numero ? `, ${numero}` : ""}${
     complemento ? `, ${complemento}` : ""
@@ -199,6 +203,7 @@ export default function RegistrarEcoponto({
         <input
           value={nome}
           onChange={(e) => setNome(e.target.value)}
+          maxLength={80}
           placeholder="Ex.: Ecolocalização Setor Central"
           className={`${inputClass} mb-6`}
           required
@@ -271,7 +276,8 @@ export default function RegistrarEcoponto({
             <input
               ref={numeroRef}
               value={numero}
-              onChange={(e) => setNumero(e.target.value)}
+              onChange={(e) => setNumero(e.target.value.toUpperCase().replace(/[^0-9A-Z/]/g, "").slice(0, 7))}
+              maxLength={7}
               placeholder="Número"
               inputMode="numeric"
               className={`col-span-1 ${inputClass}`}
@@ -280,6 +286,7 @@ export default function RegistrarEcoponto({
             <input
               value={complemento}
               onChange={(e) => setComplemento(e.target.value)}
+              maxLength={60}
               placeholder="Complemento (opcional)"
               className={`col-span-2 ${inputClass}`}
             />
@@ -345,6 +352,7 @@ export default function RegistrarEcoponto({
         <textarea
           value={obs}
           onChange={(e) => setObs(e.target.value)}
+          maxLength={500}
           placeholder="Horário de funcionamento, referências, contato…"
           rows={3}
           className={`${inputClass} resize-none mb-6`}
@@ -353,7 +361,7 @@ export default function RegistrarEcoponto({
         <button
           onClick={async () => {
             setBusy(true)
-            const ok = await onSubmit({ name: nome.trim(), address: fullAddress, materials: tipos, obs: obs.trim() || undefined })
+            const ok = await onSubmit({ name: squish(nome), address: squish(fullAddress), materials: tipos, obs: squish(obs) || undefined })
             setBusy(false)
             if (ok) setDone(true)
           }}
@@ -365,7 +373,7 @@ export default function RegistrarEcoponto({
         </button>
         {!canConfirm && (
           <p className="text-eco-400 text-xs font-body text-center mt-2">
-            Preencha nome, endereço (com número) e ao menos um material.
+            {problem}
           </p>
         )}
 

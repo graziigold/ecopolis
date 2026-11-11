@@ -3,6 +3,7 @@ import type { Screen } from '../types';
 import { AppLayout } from '../components/Nav';
 import { PlusIcon, SearchIcon } from '../components/Icons';
 import { Req } from '../components/PasswordRules';
+import { cnpjError, emailError, phoneError, squish, textError } from '../lib/validation';
 import type { Partner, PartnerType, Reward } from '../data/catalog';
 
 interface Props {
@@ -25,6 +26,8 @@ const maskCep = (v: string) => v.replace(/\D/g, '').slice(0, 8).replace(/^(\d{5}
 
 export default function GestaoParceiros({ navigate, partners, rewards, onChange }: Props) {
   const [open, setOpen] = useState(false);
+  const [editingId, setEditingId] = useState<number | null>(null);
+  const [saving, setSaving] = useState(false);
   const [form, setForm] = useState(EMPTY);
   const [errors, setErrors] = useState<Record<string, string>>({});
   const [cepLoading, setCepLoading] = useState(false);
@@ -51,19 +54,50 @@ export default function GestaoParceiros({ navigate, partners, rewards, onChange 
   async function save(e: React.FormEvent) {
     e.preventDefault();
     const er: Record<string, string> = {};
-    if (!form.name.trim()) er.name = 'Informe o nome';
-    if (form.cnpj.replace(/\D/g, '').length !== 14) er.cnpj = 'CNPJ inválido';
-    if (!form.contact.trim()) er.contact = 'Informe o responsável';
-    if (form.phone.replace(/\D/g, '').length < 10) er.phone = 'Telefone inválido';
-    if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(form.email)) er.email = 'E-mail inválido';
-    if (!form.address.trim()) er.address = 'Busque o CEP ou informe o endereço';
+    const checks: [string, string | null][] = [
+      ['name', textError(form.name, 'o nome', { min: 2, max: 120 })],
+      // CNPJ conferido quando é novo ou foi alterado (há parceiros antigos cadastrados sem verificação).
+      ['cnpj', editingId !== null && form.cnpj === partners.find((p) => p.id === editingId)?.cnpj ? null : cnpjError(form.cnpj)],
+      ['contact', textError(form.contact, 'o responsável', { min: 3, max: 80 })],
+      ['phone', phoneError(form.phone, false)],
+      ['email', emailError(form.email)],
+      ['address', form.address.trim() ? textError(form.address, 'o endereço', { max: 200 }) : 'Busque o CEP ou informe o endereço'],
+      ['number', form.number.trim() && !/^(\d{1,6}[A-Za-z]?|S\/?N)$/i.test(form.number.trim()) ? 'Use só números (ou S/N)' : null],
+    ];
+    for (const [k, msg] of checks) if (msg) er[k] = msg;
     setErrors(er);
     if (Object.keys(er).length) return;
     const { number, ...rest } = form;
-    const ok = await onChange([...partners, { ...rest, address: number ? `${form.address}, nº ${number}` : form.address, id: Date.now(), active: true }]);
+    const data = { ...rest, name: squish(rest.name), contact: squish(rest.contact), email: rest.email.trim().toLowerCase(), address: squish(number ? `${form.address}, nº ${number}` : form.address) };
+    setSaving(true);
+    const ok = await onChange(
+      editingId === null
+        ? [...partners, { ...data, id: Date.now(), active: true }]
+        : partners.map((p) => (p.id === editingId ? { ...p, ...data } : p)),
+    );
+    setSaving(false);
     if (!ok) return;
+    close();
+  }
+
+  function openNew() {
+    setEditingId(null);
     setForm(EMPTY);
+    setErrors({});
+    setOpen(true);
+  }
+
+  function openEdit(p: Partner) {
+    setEditingId(p.id);
+    setForm({ name: p.name, type: p.type, cnpj: p.cnpj, contact: p.contact, phone: p.phone, email: p.email, cep: p.cep, address: p.address, number: '' });
+    setErrors({});
+    setOpen(true);
+  }
+
+  function close() {
     setOpen(false);
+    setEditingId(null);
+    setForm(EMPTY);
   }
 
   const input = (k: string) =>
@@ -86,7 +120,7 @@ export default function GestaoParceiros({ navigate, partners, rewards, onChange 
             <h1 className="font-display font-bold text-eco-900 text-2xl">Parceiros</h1>
             <p className="text-eco-500 text-sm font-body mt-0.5">Empresas, bazares, feiras e ONGs que oferecem recompensas.</p>
           </div>
-          <button onClick={() => setOpen(true)} className="h-10 px-4 rounded-xl text-white text-sm font-display font-semibold flex items-center gap-2"
+          <button onClick={openNew} className="h-10 px-4 rounded-xl text-white text-sm font-display font-semibold flex items-center gap-2"
             style={{ background: 'linear-gradient(135deg, #2d7a3a, #1d5c2a)' }}>
             <PlusIcon size={16} /> Novo parceiro
           </button>
@@ -125,7 +159,10 @@ export default function GestaoParceiros({ navigate, partners, rewards, onChange 
                 </dl>
                 <div className="mt-3 pt-3 border-t border-eco-50 flex items-center justify-between text-xs font-body">
                   <span className="text-eco-500">{count} recompensa(s) na loja</span>
-                  <button onClick={() => navigate('gestaoRecompensas')} className="font-semibold text-eco-700 hover:text-eco-900">Ver recompensas</button>
+                  <div className="flex items-center gap-3">
+                    <button onClick={() => openEdit(p)} className="font-semibold text-eco-700 hover:text-eco-900">Editar</button>
+                    <button onClick={() => navigate('gestaoRecompensas')} className="font-semibold text-eco-700 hover:text-eco-900">Ver recompensas</button>
+                  </div>
                 </div>
               </div>
             );
@@ -137,8 +174,8 @@ export default function GestaoParceiros({ navigate, partners, rewards, onChange 
         <div className="fixed inset-0 z-[60] flex items-end lg:items-center justify-center bg-eco-950/40 backdrop-blur-sm">
           <form noValidate onSubmit={save} className="bg-[#f4f8f4] w-full lg:max-w-2xl rounded-t-3xl lg:rounded-3xl max-h-[92vh] overflow-y-auto p-6">
             <div className="flex items-center justify-between mb-1">
-              <h2 className="font-display font-bold text-eco-900 text-xl">Novo parceiro</h2>
-              <button type="button" onClick={() => setOpen(false)} className="text-sm text-eco-500 hover:text-eco-800">Cancelar</button>
+              <h2 className="font-display font-bold text-eco-900 text-xl">{editingId === null ? 'Novo parceiro' : 'Editar parceiro'}</h2>
+              <button type="button" onClick={close} className="text-sm text-eco-500 hover:text-eco-800">Cancelar</button>
             </div>
             <p className="text-[11px] text-eco-500 font-body mb-4"><span className="text-red-500">*</span> Campos obrigatórios</p>
 
@@ -174,7 +211,7 @@ export default function GestaoParceiros({ navigate, partners, rewards, onChange 
             </div>
 
             <button type="submit" className="mt-6 w-full h-12 rounded-xl text-white text-sm font-display font-semibold"
-              style={{ background: 'linear-gradient(135deg, #2d7a3a, #1d5c2a)' }}>Cadastrar parceiro</button>
+              style={{ background: 'linear-gradient(135deg, #2d7a3a, #1d5c2a)' }} disabled={saving}>{saving ? 'Salvando…' : editingId === null ? 'Cadastrar parceiro' : 'Salvar alterações'}</button>
           </form>
         </div>
       )}
